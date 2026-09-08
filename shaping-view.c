@@ -26,6 +26,9 @@
 
 #include <gtk/gtk.h>
 #include <glib/gstdio.h>
+#ifdef HAVE_APPINDICATOR
+# include <libappindicator/app-indicator.h>
+#endif
 #include <ctype.h>
 #include <locale.h>
 #include <math.h>
@@ -809,6 +812,15 @@ typedef struct {
     char           *sel_key;
     GKeyFile       *names;       /* [dev] classid = Имя                  */
     GPtrArray      *grp[PACK_N]; /* [groups]: glob-паттерны паков        */
+
+    /* трей: StatusNotifier (libappindicator) или XEmbed GtkStatusIcon */
+#ifdef HAVE_APPINDICATOR
+    AppIndicator   *tray;
+#else
+    GtkStatusIcon  *tray;
+#endif
+    GtkWidget      *tray_menu;
+    GtkCheckMenuItem *mi_pause;
 } App;
 
 static App APP;
@@ -1172,6 +1184,8 @@ static void update_row_rate(App *a, Snapshot *s, GtkTreeIter *it)
     g_free(k);
 }
 
+static void tray_update_status(Snapshot *s);
+static void on_menu_pause(GtkCheckMenuItem *mi, gpointer data);
 static void apply_snapshot(App *a, Snapshot *s);
 
 static gboolean apply_idle(gpointer data)
@@ -1335,6 +1349,7 @@ static void apply_snapshot(App *a, Snapshot *s)
         gtk_label_set_markup(a->status, st);
         gtk_header_bar_set_subtitle(GTK_HEADER_BAR(a->header),
                                     s->mock ? "ДЕМО-режим" : g_get_host_name());
+        tray_update_status(s);
         g_free(st); g_free(ts); g_date_time_unref(dt);
     }
 
@@ -1464,7 +1479,13 @@ static void on_sel_changed(GtkTreeSelection *sel, gpointer data)
 static void on_pause_toggled(GtkToggleButton *b, gpointer data)
 {
     App *a = data;
-    g_atomic_int_set(&a->paused, gtk_toggle_button_get_active(b) ? 1 : 0);
+    gboolean act = gtk_toggle_button_get_active(b);
+    g_atomic_int_set(&a->paused, act ? 1 : 0);
+    if (a->mi_pause) {  /* синхронизация галки в меню трея */
+        g_signal_handlers_block_by_func(a->mi_pause, on_menu_pause, NULL);
+        gtk_check_menu_item_set_active(a->mi_pause, act);
+        g_signal_handlers_unblock_by_func(a->mi_pause, on_menu_pause, NULL);
+    }
 }
 
 static void on_interval_changed(GtkSpinButton *b, gpointer data)
@@ -1660,6 +1681,152 @@ static gboolean sel_ok(GtkTreeSelection *sel, GtkTreeModel *m, GtkTreePath *path
     return allow;
 }
 
+/* =========================== ТРЕЙ =========================== */
+/* Крестик и «свернуть» прячут окно в трей (окно не разрушается).
+ * Иконка: libappindicator (StatusNotifier) или GtkStatusIcon (XEmbed).
+ * Полный выход — только пункт «Выход» в меню трея. */
+
+static void tray_toggle_window(void)
+{
+    if (!APP.win) return;
+    if (gtk_widget_get_visible(APP.win)) {
+        gtk_widget_hide(APP.win);
+    } else {
+        gtk_window_deiconify(GTK_WINDOW(APP.win));
+        gtk_widget_show(APP.win);
+        gtk_window_present(GTK_WINDOW(APP.win));
+    }
+}
+
+static void on_menu_show(GtkMenuItem *mi, gpointer data)
+{
+    (void) mi; (void) data;
+    tray_toggle_window();
+}
+
+static void on_menu_pause(GtkCheckMenuItem *mi, gpointer data)
+{
+    (void) data;
+    gboolean act = gtk_check_menu_item_get_active(mi);
+    if (gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(APP.btn_pause)) != act)
+        gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(APP.btn_pause), act);
+}
+
+static void on_menu_quit(GtkMenuItem *mi, gpointer data)
+{
+    (void) mi; (void) data;
+    g_application_quit(G_APPLICATION(APP.app));
+}
+
+static gboolean win_delete_event(GtkWidget *w, GdkEvent *e, gpointer data)
+{
+    (void) w; (void) e; (void) data;
+    gtk_widget_hide(APP.win);
+    return TRUE;
+}
+
+static gboolean win_state_event(GtkWidget *w, GdkEventWindowState *e, gpointer data)
+{
+    (void) w; (void) data;
+    if ((e->changed_mask & GDK_WINDOW_STATE_ICONIFIED) &&
+        (e->new_window_state & GDK_WINDOW_STATE_ICONIFIED))
+        gtk_widget_hide(APP.win);
+    return FALSE;
+}
+
+static GtkWidget *tray_build_menu(void)
+{
+    GtkWidget *menu = gtk_menu_new();
+    GtkWidget *mi_show = gtk_menu_item_new_with_label(_("Показать / скрыть"));
+    APP.mi_pause = GTK_CHECK_MENU_ITEM(gtk_check_menu_item_new_with_label(_("Пауза опроса")));
+    GtkWidget *sep = gtk_separator_menu_item_new();
+    GtkWidget *mi_quit = gtk_menu_item_new_with_label(_("Выход"));
+
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi_show);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), GTK_WIDGET(APP.mi_pause));
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), sep);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi_quit);
+
+    g_signal_connect(mi_show, "activate", G_CALLBACK(on_menu_show), NULL);
+    g_signal_connect(APP.mi_pause, "toggled", G_CALLBACK(on_menu_pause), NULL);
+    g_signal_connect(mi_quit, "activate", G_CALLBACK(on_menu_quit), NULL);
+
+    gtk_widget_show_all(menu);
+    return menu;
+}
+
+#ifdef HAVE_APPINDICATOR
+
+static void tray_init(void)
+{
+    APP.tray_menu = tray_build_menu();
+    APP.tray = app_indicator_new("shaping-view", "network-wired",
+                                 APP_INDICATOR_CATEGORY_APPLICATION_STATUS);
+    app_indicator_set_status(APP.tray, APP_INDICATOR_STATUS_ACTIVE);
+    app_indicator_set_icon_full(APP.tray, "network-wired", "shaping-view");
+    app_indicator_set_menu(APP.tray, GTK_MENU(APP.tray_menu));
+    app_indicator_set_title(APP.tray, "Шейпинг tc");
+}
+
+static void tray_update_status(Snapshot *s)
+{
+    if (!APP.tray || !s) return;
+    double r = 0;
+    for (guint i = 0; i < s->top->len; i++) {
+        TcIface *ifc = g_ptr_array_index(s->top, i);
+        if (!ifc->is_ifb) r += iface_classes_rate(ifc) + iface_paths_rate(ifc);
+    }
+    char *rt = fmt_rate(r);
+    char *t = g_strdup_printf("Шейпинг tc · суммарно: %s%s", rt, s->mock ? " (ДЕМО)" : "");
+    app_indicator_set_title(APP.tray, t);
+    g_free(rt); g_free(t);
+}
+
+#else  /* GtkStatusIcon (XEmbed) — deprecated, но работает в XEmbed-треях */
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+
+static void tray_activate_cb(GtkStatusIcon *icon, gpointer data)
+{
+    (void) icon; (void) data;
+    tray_toggle_window();
+}
+
+static void tray_popup_cb(GtkStatusIcon *icon, guint button, guint at, gpointer data)
+{
+    (void) icon; (void) data;
+    gtk_menu_popup(GTK_MENU(APP.tray_menu), NULL, NULL,
+                   gtk_status_icon_position_menu, APP.tray, button, at);
+}
+
+static void tray_init(void)
+{
+    APP.tray_menu = tray_build_menu();
+    APP.tray = gtk_status_icon_new_from_icon_name("network-wired");
+    gtk_status_icon_set_tooltip_markup(APP.tray, "Шейпинг tc");
+    gtk_status_icon_set_visible(APP.tray, TRUE);
+    g_signal_connect(APP.tray, "activate", G_CALLBACK(tray_activate_cb), NULL);
+    g_signal_connect(APP.tray, "popup-menu", G_CALLBACK(tray_popup_cb), NULL);
+}
+
+static void tray_update_status(Snapshot *s)
+{
+    if (!APP.tray || !s) return;
+    double r = 0;
+    for (guint i = 0; i < s->top->len; i++) {
+        TcIface *ifc = g_ptr_array_index(s->top, i);
+        if (!ifc->is_ifb) r += iface_classes_rate(ifc) + iface_paths_rate(ifc);
+    }
+    char *rt = fmt_rate(r);
+    char *t = g_strdup_printf("Шейпинг tc · суммарно: %s%s", rt, s->mock ? " (ДЕМО)" : "");
+    gtk_status_icon_set_tooltip_markup(APP.tray, t);
+    g_free(rt); g_free(t);
+}
+
+#pragma GCC diagnostic pop
+#endif
+
 /* =========================== СБОРКА UI =========================== */
 
 static GtkWidget *make_left(void)
@@ -1778,8 +1945,12 @@ static void build_ui(App *a)
     gtk_label_set_xalign(a->status, 0.0);
     gtk_box_pack_start(GTK_BOX(vbox), GTK_WIDGET(a->status), FALSE, FALSE, 0);
 
+    g_signal_connect(a->win, "delete-event", G_CALLBACK(win_delete_event), NULL);
+    g_signal_connect(a->win, "window-state-event", G_CALLBACK(win_state_event), NULL);
+
     gtk_container_add(GTK_CONTAINER(a->win), vbox);
     gtk_widget_show_all(a->win);
+    tray_init();
 }
 
 /* ========================= ЖИЗНЕННЫЙ ЦИКЛ ========================= */
@@ -1844,6 +2015,8 @@ static void on_shutdown(GtkApplication *application, gpointer data)
     g_free(a->cards_dev); a->cards_dev = NULL;
     g_free(a->tc_path); a->tc_path = NULL;
     g_free(a->ip_path); a->ip_path = NULL;
+    if (a->tray) { g_object_unref(a->tray); a->tray = NULL; }
+    if (a->tray_menu) { gtk_widget_destroy(a->tray_menu); a->tray_menu = NULL; }
     if (a->names) { g_key_file_free(a->names); a->names = NULL; }
 }
 
