@@ -1,0 +1,1573 @@
+/* shaping-view.c — GTK3-монитор иерархии tc (HTB / ingress / ifb / mirred) в реальном времени.
+ *
+ * АРХИТЕКТУРА СБОРА ДАННЫХ
+ * ------------------------
+ * Все вызовы tc/ip выполняются ТОЛЬКО в рабочем потоке (worker_loop). Готовый
+ * Snapshot публикуется в GUI через g_idle_add_full(); GUI-поток никогда не
+ * блокируется на подпроцессах. Период опроса настраивается (1..10 с).
+ *
+ * ЛОГИКА INGRESS → IFB (auto-discovery)
+ * -------------------------------------
+ * tc перенаправляет входящий трафик на ifb-устройства действием mirred:
+ *     tc filter add dev X parent ffff: ... action mirred egress redirect dev Y
+ * Дискавери — разбор `tc -s filter show dev X parent ffff:`: каждая строка
+ * "... mirred (Egress Redirect to device Y)" создаёт под устройством X дочерний
+ * узел "Входящий", привязанный к ifb Y. Семантика пути — по матчу фильтра:
+ *   - dst-адрес, равный адресу самого хоста -> "локальный (на хост)";
+ *   - matchall (u32 0 0)                    -> "форвард"/"весь входящий";
+ *   - прочее                                -> подпись вида "dst A.B.C.D".
+ * Классы egress-HTB целевого ifb показываются в правой панели при выборе
+ * узла "Входящий". Само ifb-устройство с верхнего уровня сайдбара СКРЫТО
+ * (is_ifb + referenced) и живёт только как дочерний узел.
+ *
+ * Сборка: pkg-config gtk+-3.0 (см. Makefile). Интерфейс — русский (исходные
+ * строки); переводы — стандартный gettext (README, флаг NLS=1).
+ */
+
+#include <gtk/gtk.h>
+#include <glib/gstdio.h>
+#include <ctype.h>
+#include <locale.h>
+#include <math.h>
+#include <stdlib.h>
+#include <string.h>
+
+#ifdef ENABLE_NLS
+# include <libintl.h>
+# define _(s) dgettext("shaping-view", (s))
+#else
+# define _(s) (s)
+#endif
+
+#define APP_ID          "ru.kosmik.shaping-view"
+#define HISTORY_LEN     60
+#define DEF_INTERVAL_MS 1000
+#define CARD_INDENT_PX  20
+
+/* ============================ УТИЛИТЫ ============================ */
+
+/* "396Kbit" -> 396000 bps (tc печатает десятичные K/M/G) */
+static double parse_rate_bps(const char *tok)
+{
+    char *end = NULL;
+    double v;
+
+    if (!tok || !*tok) return -1.0;
+    v = g_ascii_strtod(tok, &end);
+    if (end == tok) return -1.0;
+    if (g_str_has_prefix(end, "Tbit")) return v * 1e12;
+    if (g_str_has_prefix(end, "Gbit")) return v * 1e9;
+    if (g_str_has_prefix(end, "Mbit")) return v * 1e6;
+    if (g_str_has_prefix(end, "Kbit") || g_str_has_prefix(end, "kbit")) return v * 1e3;
+    if (g_str_has_prefix(end, "bit"))  return v;
+    return v;
+}
+
+static char *fmt_rate(double bps)
+{
+    if (bps < 0)    return g_strdup("—");
+    if (bps >= 1e9) return g_strdup_printf("%.2f Гбит/с", bps / 1e9);
+    if (bps >= 1e6) return g_strdup_printf("%.1f Мбит/с", bps / 1e6);
+    if (bps >= 1e3) return g_strdup_printf("%.0f Кбит/с", bps / 1e3);
+    return g_strdup_printf("%.0f бит/с", bps);
+}
+
+/* hex-IP из u32-матча: "c0a88901" -> "192.168.137.1" */
+static char *hex_to_ip(const char *hex)
+{
+    guint8 b[4];
+    int i;
+
+    if (!hex || strlen(hex) != 8) return NULL;
+    for (i = 0; i < 4; i++) {
+        char t[3] = { hex[2 * i], hex[2 * i + 1], 0 };
+        b[i] = (guint8) strtoul(t, NULL, 16);
+    }
+    return g_strdup_printf("%u.%u.%u.%u", b[0], b[1], b[2], b[3]);
+}
+
+/* "1:10" -> 10 (для сортировки классов) */
+static guint classid_minor(const char *classid)
+{
+    const char *c = classid ? strchr(classid, ':') : NULL;
+    return c ? (guint) g_ascii_strtoull(c + 1, NULL, 16) : 0;
+}
+
+static gboolean name_is_ifb(const char *n)
+{
+    if (g_str_has_suffix(n, "_ifb")) return TRUE;
+    if (!strncmp(n, "ifb", 3)) {           /* пул вида ifb0, ifb1 … */
+        const char *p = n + 3;
+        if (!*p) return FALSE;
+        for (; *p; p++)
+            if (!isdigit((unsigned char) *p)) return FALSE;
+        return TRUE;
+    }
+    return FALSE;
+}
+
+/* сплит по пробелам/табам без пустых токенов */
+static char **split_ws(const char *line)
+{
+    char **raw = g_strsplit_set(line, " \t\r\n", -1);
+    guint n = 0;
+    for (guint i = 0; raw[i]; i++) {
+        if (raw[i][0]) raw[n++] = raw[i];
+        else g_free(raw[i]);
+    }
+    raw[n] = NULL;
+    return raw;
+}
+
+static int tok_find(char **t, const char *s)
+{
+    for (int i = 0; t[i]; i++)
+        if (!strcmp(t[i], s)) return i;
+    return -1;
+}
+
+static guint64 tok_u64(char **t, const char *key)
+{
+    int i = tok_find(t, key);
+    return (i >= 0 && t[i + 1]) ? g_ascii_strtoull(t[i + 1], NULL, 10) : 0;
+}
+
+/* ============================ МОДЕЛЬ ============================ */
+
+typedef struct {
+    char    *kind;       /* htb / sfq / ingress / fq_codel …        */
+    char    *handle;     /* "1:", "30:", "ffff:"                    */
+    char    *parent;     /* "1:30" или NULL для root                */
+    char    *backlog;    /* "0b 0p"                                 */
+    gboolean is_root;
+} TcQdisc;
+
+typedef struct {
+    char    *classid;    /* "1:10"                                  */
+    char    *parent;     /* "1:1" или NULL для корня HTB            */
+    char    *leaf;       /* "10:" или NULL                          */
+    int      prio;       /* -1 если не задан                        */
+    int      depth;      /* глубина в иерархии HTB (корень = 0)     */
+    double   rate_bps;   /* -1 = неизвестно                         */
+    double   ceil_bps;
+    guint64  bytes, packets, dropped, overlimits;
+    char    *backlog;    /* из leaf-qdisc, "0b 0p"                  */
+    double   rate_now;   /* bps за последний интервал               */
+} TcClass;
+
+typedef struct {         /* один mirred-редирект из ingress устройства */
+    char    *ifb;        /* целевое устройство                       */
+    char    *desc;       /* "dst 192.168.137.1" / "весь трафик"      */
+    gboolean matchall;
+    gboolean is_local;   /* матч по адресу самого хоста              */
+    guint64  bytes, packets;
+    double   rate_now;
+} TcIngressPath;
+
+typedef struct {
+    char     *name;
+    gboolean  is_ifb;
+    gboolean  referenced;  /* на устройство ссылается чужой mirred     */
+    gboolean  has_root;
+    gboolean  has_htb;
+    gboolean  has_ingress;
+    GPtrArray *qdiscs;     /* TcQdisc*                                 */
+    GPtrArray *classes;    /* TcClass*  (egress-иерархия)              */
+    GPtrArray *paths;      /* TcIngressPath* (только у физических)     */
+} TcIface;
+
+typedef struct {
+    GPtrArray *ifaces;     /* TcIface* — все устройства с qdisc-ами    */
+    GPtrArray *top;        /* TcIface* — верхний уровень сайдбара      */
+    gboolean   mock;
+    char      *error;      /* сообщение об ошибке сбора                */
+} Snapshot;
+
+static void tc_class_free(gpointer p)
+{
+    TcClass *c = p;
+    if (!c) return;
+    g_free(c->classid); g_free(c->parent); g_free(c->leaf); g_free(c->backlog);
+    g_free(c);
+}
+
+static void tc_qdisc_free(gpointer p)
+{
+    TcQdisc *q = p;
+    if (!q) return;
+    g_free(q->kind); g_free(q->handle); g_free(q->parent); g_free(q->backlog);
+    g_free(q);
+}
+
+static void tc_path_free(gpointer p)
+{
+    TcIngressPath *t = p;
+    if (!t) return;
+    g_free(t->ifb); g_free(t->desc);
+    g_free(t);
+}
+
+static void tc_iface_free(gpointer p)
+{
+    TcIface *i = p;
+    if (!i) return;
+    g_free(i->name);
+    g_ptr_array_unref(i->qdiscs);
+    g_ptr_array_unref(i->classes);
+    g_ptr_array_unref(i->paths);
+    g_free(i);
+}
+
+static TcIface *snapshot_find_iface(Snapshot *s, const char *dev);
+
+static Snapshot *snapshot_new(void)
+{
+    Snapshot *s = g_new0(Snapshot, 1);
+    s->ifaces = g_ptr_array_new_with_free_func(tc_iface_free);
+    s->top    = g_ptr_array_new();
+    return s;
+}
+
+static void snapshot_free(Snapshot *s)
+{
+    if (!s) return;
+    g_ptr_array_unref(s->top);
+    g_ptr_array_unref(s->ifaces);
+    g_free(s->error);
+    g_free(s);
+}
+
+static TcIface *snapshot_iface(Snapshot *s, const char *dev)
+{
+    TcIface *i = snapshot_find_iface(s, dev);
+    if (!i) {
+        i = g_new0(TcIface, 1);
+        i->name    = g_strdup(dev);
+        i->is_ifb  = name_is_ifb(dev);
+        i->qdiscs  = g_ptr_array_new_with_free_func(tc_qdisc_free);
+        i->classes = g_ptr_array_new_with_free_func(tc_class_free);
+        i->paths   = g_ptr_array_new_with_free_func(tc_path_free);
+        g_ptr_array_add(s->ifaces, i);
+    }
+    return i;
+}
+
+static TcIface *snapshot_find_iface(Snapshot *s, const char *dev)
+{
+    if (!dev) return NULL;
+    for (guint k = 0; k < s->ifaces->len; k++) {
+        TcIface *x = s->ifaces->pdata[k];
+        if (!strcmp(x->name, dev)) return x;
+    }
+    return NULL;
+}
+
+static double iface_classes_rate(const TcIface *i)
+{
+    double sum = 0;
+    for (guint k = 0; i && k < i->classes->len; k++)
+        sum += ((TcClass *) i->classes->pdata[k])->rate_now;
+    return sum;
+}
+
+static double iface_paths_rate(const TcIface *i)
+{
+    double sum = 0;
+    for (guint k = 0; i && k < i->paths->len; k++)
+        sum += ((TcIngressPath *) i->paths->pdata[k])->rate_now;
+    return sum;
+}
+
+static gboolean ip_in_list(const GPtrArray *ips, const char *ip)
+{
+    for (guint i = 0; i < ips->len; i++)
+        if (!strcmp(g_ptr_array_index(ips, i), ip)) return TRUE;
+    return FALSE;
+}
+
+/* бэклог класса: leaf-qdisc с parent == classid */
+static const char *backlog_for_class(const TcIface *ifc, const TcClass *cls)
+{
+    for (guint i = 0; ifc && i < ifc->qdiscs->len; i++) {
+        TcQdisc *q = g_ptr_array_index(ifc->qdiscs, i);
+        if (q->parent && cls->classid && !strcmp(q->parent, cls->classid))
+            return q->backlog;
+    }
+    return NULL;
+}
+
+/* ========================= КОЛЛЕКТОР (worker) ========================= */
+
+typedef struct { guint64 bytes; gint64 us; gboolean have; } PrevV;
+
+typedef struct {
+    char       *tc;    /* абсолютный путь к tc (или NULL → мок)   */
+    char       *ip;
+    GHashTable *prev;  /* "dev|classid" / "dev|ing|ifb" -> PrevV*  */
+} Collector;
+
+static Collector *collector_new(void)
+{
+    Collector *c = g_new0(Collector, 1);
+    c->prev = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+    return c;
+}
+
+static void collector_free(Collector *c)
+{
+    if (!c) return;
+    g_free(c->tc); g_free(c->ip);
+    g_hash_table_unref(c->prev);
+    g_free(c);
+}
+
+/* прирост байт -> bps; предыдущее значение хранится по ключу */
+static double calc_rate(Collector *c, const char *key, guint64 bytes, gint64 now_us)
+{
+    PrevV *p = g_hash_table_lookup(c->prev, key);
+    double r = 0;
+
+    if (p && p->have && now_us > p->us) {
+        if (bytes >= p->bytes)
+            r = (double)(bytes - p->bytes) * 8.0 * 1e6 / (double)(now_us - p->us);
+    }
+    if (!p) {
+        p = g_new0(PrevV, 1);
+        g_hash_table_insert(c->prev, g_strdup(key), p);
+    }
+    p->bytes = bytes;
+    p->us    = now_us;
+    p->have  = TRUE;
+    return r;
+}
+
+/* захват stdout подпроцесса (только worker-поток) */
+static char *run_capture(const char *const argv[], GError **error)
+{
+    GSubprocess *sp = NULL;
+    GBytes *out = NULL;
+    char *result = NULL;
+
+    sp = g_subprocess_newv(argv, G_SUBPROCESS_FLAGS_STDOUT_PIPE |
+                                 G_SUBPROCESS_FLAGS_STDERR_SILENCE, error);
+    if (!sp) return NULL;
+
+    if (!g_subprocess_communicate(sp, NULL, NULL, &out, NULL, error)) {
+        g_object_unref(sp);
+        return NULL;
+    }
+    gsize sz = 0;
+    gconstpointer data = g_bytes_get_data(out, &sz);
+    result = g_strndup(data ? (const char *) data : "", sz);
+    g_bytes_unref(out);
+    g_object_unref(sp);
+    return result;
+}
+
+static GPtrArray *get_host_ips(Collector *c)
+{
+    GPtrArray *ips = g_ptr_array_new_with_free_func(g_free);
+    const char *const argv[] = { c->ip, "-4", "-o", "addr", "show", NULL };
+    GError *err = NULL;
+
+    char *out = run_capture(argv, &err);
+    if (out) {
+        char **lines = g_strsplit(out, "\n", -1);
+        for (int i = 0; lines[i]; i++) {
+            char **t = split_ws(lines[i]);
+            int ix = tok_find(t, "inet");
+            if (ix >= 0 && t[ix + 1]) {
+                char **ipp = g_strsplit(t[ix + 1], "/", 2);
+                if (ipp[0]) g_ptr_array_add(ips, g_strdup(ipp[0]));
+                g_strfreev(ipp);
+            }
+            g_strfreev(t);
+        }
+        g_strfreev(lines);
+        g_free(out);
+    }
+    g_clear_error(&err);
+    return ips;
+}
+
+/* (определена ниже в демо-секции) */
+static Snapshot *mock_snapshot(void);
+
+/* --- разбор `tc -s qdisc show` (все устройства одним вызовом) --- */
+static void parse_qdisc_all(Snapshot *s, const char *out)
+{
+    if (!out) return;
+    char **lines = g_strsplit(out, "\n", -1);
+    TcIface *cur_dev = NULL;
+    TcQdisc *cur_q   = NULL;
+
+    for (int li = 0; lines[li]; li++) {
+        char **t = split_ws(lines[li]);
+        if (!t[0]) { g_strfreev(t); continue; }
+
+        if (!strcmp(t[0], "qdisc") && t[1] && t[2]) {
+            int di = tok_find(t, "dev");
+            int pi = tok_find(t, "parent");
+            const char *dev = (di >= 0 && t[di + 1]) ? t[di + 1] : NULL;
+
+            if (dev && strcmp(t[1], "noqueue") != 0 && strcmp(t[1], "noop") != 0) {
+                cur_dev = snapshot_iface(s, dev);
+                cur_q = g_new0(TcQdisc, 1);
+                cur_q->kind    = g_strdup(t[1]);
+                cur_q->handle  = g_strdup(t[2]);
+                cur_q->parent  = (pi >= 0 && t[pi + 1]) ? g_strdup(t[pi + 1]) : NULL;
+                cur_q->is_root = (tok_find(t, "root") >= 0);
+                cur_q->backlog = g_strdup("0b 0p");
+                g_ptr_array_add(cur_dev->qdiscs, cur_q);
+                if (cur_q->is_root) cur_dev->has_root = TRUE;
+                if (!strcmp(t[1], "htb"))     cur_dev->has_htb = TRUE;
+                if (!strcmp(t[1], "ingress")) cur_dev->has_ingress = TRUE;
+            } else {
+                cur_dev = NULL;
+                cur_q = NULL;
+            }
+        }
+        else if (cur_q && !strcmp(t[0], "backlog") && t[1] && t[2]) {
+            g_free(cur_q->backlog);
+            cur_q->backlog = g_strdup_printf("%s %s", t[1], t[2]);
+        }
+        g_strfreev(t);
+    }
+    g_strfreev(lines);
+}
+
+/* --- разбор `tc -s class show dev X` --- */
+static void parse_classes_dev(TcIface *ifc, const char *out)
+{
+    if (!out) return;
+    char **lines = g_strsplit(out, "\n", -1);
+    TcClass *cur = NULL;
+
+    for (int li = 0; lines[li]; li++) {
+        char **t = split_ws(lines[li]);
+        if (!t[0]) { g_strfreev(t); continue; }
+
+        if (!strcmp(t[0], "class") && t[1] && t[2]) {
+            cur = g_new0(TcClass, 1);
+            cur->classid = g_strdup(t[2]);
+            cur->prio = -1;
+            cur->rate_bps = cur->ceil_bps = -1.0;
+            cur->backlog = g_strdup("0b 0p");
+            for (int k = 3; t[k]; k++) {
+                if (!strcmp(t[k], "parent") && t[k + 1]) cur->parent = g_strdup(t[++k]);
+                else if (!strcmp(t[k], "leaf") && t[k + 1]) cur->leaf = g_strdup(t[++k]);
+                else if (!strcmp(t[k], "prio") && t[k + 1]) cur->prio = atoi(t[++k]);
+                else if (!strcmp(t[k], "rate") && t[k + 1]) cur->rate_bps = parse_rate_bps(t[++k]);
+                else if (!strcmp(t[k], "ceil") && t[k + 1]) cur->ceil_bps = parse_rate_bps(t[++k]);
+            }
+            g_ptr_array_add(ifc->classes, cur);
+        }
+        else if (cur && !strcmp(t[0], "Sent") && t[1]) {
+            cur->bytes = g_ascii_strtoull(t[1], NULL, 10);
+            cur->packets = t[3] ? g_ascii_strtoull(t[3], NULL, 10) : 0;
+            cur->dropped = tok_u64(t, "dropped");
+            cur->overlimits = tok_u64(t, "overlimits");
+        }
+        else if (cur && !strcmp(t[0], "backlog") && t[1] && t[2]) {
+            g_free(cur->backlog);
+            cur->backlog = g_strdup_printf("%s %s", t[1], t[2]);
+        }
+        g_strfreev(t);
+    }
+    g_strfreev(lines);
+}
+
+/* --- разбор `tc -s filter show dev X parent ffff:`: ищем mirred → ifb --- */
+static void parse_ingress_dev(TcIface *dev, const char *out, const GPtrArray *host_ips)
+{
+    if (!out) return;
+    char **lines = g_strsplit(out, "\n", -1);
+    TcIngressPath *cur = NULL;
+    gboolean matchall = FALSE;
+    char *match_ip = NULL;   /* dotted quad из hex-матча */
+    int at_off = -1;         /* смещение u32: 16 = dst, 12 = src */
+
+    for (int li = 0; lines[li]; li++) {
+        char **t = split_ws(lines[li]);
+        if (!t[0]) { g_strfreev(t); continue; }
+
+        if (!strcmp(t[0], "filter")) {
+            /* новый фильтр — сброс контекста матча */
+            matchall = FALSE;
+            at_off = -1;
+            g_free(match_ip); match_ip = NULL;
+            cur = NULL;
+        }
+        else if (!strcmp(t[0], "match") && t[1]) {
+            if (!strcmp(t[1], "u32")) {
+                matchall = (t[2] && t[3] && !strcmp(t[2], "0") && !strcmp(t[3], "0"));
+                at_off = t[5] ? atoi(t[5]) : -1;
+                g_free(match_ip); match_ip = NULL;
+            } else if (strchr(t[1], '/')) {
+                char **vm = g_strsplit(t[1], "/", 2);
+                g_free(match_ip);
+                match_ip = hex_to_ip(vm[0]);
+                matchall = FALSE;
+                at_off = t[3] ? atoi(t[3]) : -1;
+                g_strfreev(vm);
+            }
+        }
+        else if (strstr(lines[li], "mirred (Egress Redirect to device ")) {
+            const char *p = strstr(lines[li], "to device ");
+            const char *e = p ? strchr(p, ')') : NULL;
+            if (p && e && e > p) {
+                cur = g_new0(TcIngressPath, 1);
+                cur->ifb = g_strndup(p + strlen("to device "), (gsize)(e - (p + strlen("to device "))));
+                cur->matchall = matchall;
+                if (matchall) {
+                    cur->desc = g_strdup("весь трафик");
+                } else if (match_ip) {
+                    cur->desc = g_strdup_printf("%s %s",
+                            at_off == 16 ? "dst" : (at_off == 12 ? "src" : "match"),
+                            match_ip);
+                    if (at_off == 16 && ip_in_list(host_ips, match_ip))
+                        cur->is_local = TRUE;
+                } else {
+                    cur->desc = g_strdup("матч");
+                }
+                g_ptr_array_add(dev->paths, cur);
+            }
+        }
+        else if (cur && !strcmp(t[0], "Sent") && t[1]) {
+            cur->bytes = g_ascii_strtoull(t[1], NULL, 10);
+            cur->packets = t[3] ? g_ascii_strtoull(t[3], NULL, 10) : 0;
+        }
+        g_strfreev(t);
+    }
+    g_free(match_ip);
+    g_strfreev(lines);
+}
+
+/* --- глубина HTB-иерархии и сортировка --- */
+static void assign_depth(GPtrArray *classes)
+{
+    for (guint i = 0; i < classes->len; i++) {
+        TcClass *c = g_ptr_array_index(classes, i);
+        int d = 0;
+        TcClass *p = c;
+        while (p && p->parent && d < 16) {
+            TcClass *pp = NULL;
+            for (guint j = 0; j < classes->len; j++) {
+                TcClass *x = g_ptr_array_index(classes, j);
+                if (!strcmp(x->classid, p->parent)) { pp = x; break; }
+            }
+            if (!pp || pp == p) break;
+            d++;
+            p = pp;
+        }
+        c->depth = d;
+    }
+}
+
+static int class_cmp(gconstpointer a, gconstpointer b)
+{
+    const TcClass *x = *(const TcClass * const *) a;
+    const TcClass *y = *(const TcClass * const *) b;
+    if (x->depth != y->depth) return x->depth - y->depth;
+    guint mx = classid_minor(x->classid), my = classid_minor(y->classid);
+    if (mx != my) return mx < my ? -1 : 1;
+    return strcmp(x->classid ? x->classid : "", y->classid ? y->classid : "");
+}
+
+static int iface_cmp(gconstpointer a, gconstpointer b)
+{
+    const TcIface *x = *(const TcIface * const *) a;
+    const TcIface *y = *(const TcIface * const *) b;
+    return g_utf8_collate(x->name, y->name);
+}
+
+static Snapshot *collect_snapshot(Collector *c)
+{
+    Snapshot *s = snapshot_new();
+    gint64 now_us = g_get_monotonic_time();
+
+    if (!c->tc) { snapshot_free(s); return mock_snapshot(); }
+
+    /* 1) адреса хоста — для эвристики «локальный ingress» */
+    GPtrArray *ips = get_host_ips(c);
+
+    /* 2) все qdisc-ы одним вызовом */
+    const char *const a1[] = { c->tc, "-s", "qdisc", "show", NULL };
+    char *out = run_capture(a1, NULL);
+    parse_qdisc_all(s, out);
+    g_free(out);
+
+    /* 3) классы и ingress-фильтры по устройствам */
+    for (guint i = 0; i < s->ifaces->len; i++) {
+        TcIface *ifc = g_ptr_array_index(s->ifaces, i);
+        if (ifc->has_htb) {
+            const char *const av[] = { c->tc, "-s", "class", "show", "dev", ifc->name, NULL };
+            out = run_capture(av, NULL);
+            parse_classes_dev(ifc, out);
+            g_free(out);
+        }
+        if (ifc->has_ingress) {
+            const char *const av[] = { c->tc, "-s", "filter", "show", "dev", ifc->name, "parent", "ffff:", NULL };
+            out = run_capture(av, NULL);
+            parse_ingress_dev(ifc, out, ips);
+            g_free(out);
+        }
+    }
+    g_ptr_array_unref(ips);
+
+    /* 4) скорости по приросту байт */
+    for (guint i = 0; i < s->ifaces->len; i++) {
+        TcIface *ifc = g_ptr_array_index(s->ifaces, i);
+        for (guint k = 0; k < ifc->classes->len; k++) {
+            TcClass *cl = g_ptr_array_index(ifc->classes, k);
+            char *key = g_strdup_printf("%s|%s", ifc->name, cl->classid);
+            cl->rate_now = calc_rate(c, key, cl->bytes, now_us);
+            g_free(key);
+        }
+        for (guint k = 0; k < ifc->paths->len; k++) {
+            TcIngressPath *p = g_ptr_array_index(ifc->paths, k);
+            char *key = g_strdup_printf("%s|ing|%s", ifc->name, p->ifb);
+            p->rate_now = calc_rate(c, key, p->bytes, now_us);
+            g_free(key);
+        }
+    }
+
+    /* 5) глубина классов + сортировка */
+    for (guint i = 0; i < s->ifaces->len; i++) {
+        TcIface *ifc = g_ptr_array_index(s->ifaces, i);
+        assign_depth(ifc->classes);
+        if (ifc->classes->len > 1)
+            g_ptr_array_sort(ifc->classes, class_cmp);
+    }
+
+    /* 6) пометка referenced: ifb, на которые есть mirred-ссылки */
+    for (guint i = 0; i < s->ifaces->len; i++) {
+        TcIface *ifc = g_ptr_array_index(s->ifaces, i);
+        for (guint k = 0; k < ifc->paths->len; k++) {
+            TcIngressPath *p = g_ptr_array_index(ifc->paths, k);
+            TcIface *tgt = snapshot_iface(s, p->ifb);
+            if (tgt) tgt->referenced = TRUE;
+        }
+    }
+
+    /* 7) верхний уровень: физические устройства с содержимым + автономные ifb */
+    for (guint i = 0; i < s->ifaces->len; i++) {
+        TcIface *ifc = g_ptr_array_index(s->ifaces, i);
+        gboolean interesting = (ifc->classes->len > 0 || ifc->paths->len > 0 || ifc->has_ingress);
+        if (ifc->is_ifb) {
+            if (ifc->referenced) continue;       /* скрыт как дочерний узел */
+            if (!interesting) continue;          /* автономный ifb без шейпинга */
+        } else if (!interesting) {
+            continue;
+        }
+        g_ptr_array_add(s->top, ifc);
+    }
+    g_ptr_array_sort(s->top, iface_cmp);
+
+    return s;
+}
+
+/* --- мок: если tc недоступен, интерфейс всё равно живой --- */
+static TcClass *mock_class(TcIface *i, const char *id, const char *parent,
+                           const char *leaf, int prio, double rate, double ceil)
+{
+    TcClass *cl = g_new0(TcClass, 1);
+    cl->classid = g_strdup(id);
+    cl->parent = parent ? g_strdup(parent) : NULL;
+    cl->leaf = leaf ? g_strdup(leaf) : NULL;
+    cl->prio = prio;
+    cl->rate_bps = rate; cl->ceil_bps = ceil;
+    cl->backlog = g_strdup("0b 0p");
+    cl->rate_now = rate;
+    g_ptr_array_add(i->classes, cl);
+    return cl;
+}
+
+static void mock_path(TcIface *i, const char *ifb, gboolean matchall,
+                      const char *desc, gboolean is_local, double rate)
+{
+    TcIngressPath *p = g_new0(TcIngressPath, 1);
+    p->ifb = g_strdup(ifb);
+    p->desc = g_strdup(desc);
+    p->matchall = matchall;
+    p->is_local = is_local;
+    p->rate_now = rate;
+    g_ptr_array_add(i->paths, p);
+}
+
+static Snapshot *mock_snapshot(void)
+{
+    static gint64 t0 = 0;
+    if (!t0) t0 = g_get_monotonic_time();
+    double t = (g_get_monotonic_time() - t0) / 1e6;
+
+    Snapshot *s = snapshot_new();
+    s->mock = TRUE;
+
+    double r_wan = 40e6 + 28e6 * fabs(sin(t * 0.55)) + 4e6 * sin(t * 2.1);
+    double r_lan = 22e6 + 14e6 * fabs(sin(t * 0.37 + 1.0));
+    double r_loc = 4e6  + 2.5e6 * fabs(sin(t * 0.8 + 0.5));
+    double r_dns = 250e3 * (0.5 + 0.5 * sin(t * 3.0));
+
+    TcIface *wan = snapshot_iface(s, "eth0-demo");
+    wan->has_root = wan->has_htb = TRUE;
+    mock_class(wan, "1:1",  NULL,  NULL,  0, 99e6, 99e6)->rate_now = r_wan;
+    mock_class(wan, "1:10", "1:1", "10:", 1, 396e3, 594e3)->rate_now = r_dns;
+    mock_class(wan, "1:20", "1:1", "20:", 2, 95e6, 97e6)->rate_now = r_wan * 0.75;
+    mock_class(wan, "1:30", "1:1", "30:", 3, 12e6, 89e6)->rate_now = r_wan * 0.1;
+    mock_class(wan, "1:70", "1:1", "70:", 7, 1e6, 89e6)->rate_now = r_wan * 0.05;
+    mock_path(wan, "wan0_ifb-demo", TRUE, "весь трафик", FALSE, r_wan);
+
+    TcIface *wifb = snapshot_iface(s, "wan0_ifb-demo");
+    wifb->has_root = wifb->has_htb = TRUE;
+    mock_class(wifb, "1:1",  NULL,  NULL,  0, 99e6, 99e6)->rate_now = r_wan;
+    mock_class(wifb, "1:20", "1:1", "20:", 2, 95e6, 97e6)->rate_now = r_wan * 0.7;
+    mock_class(wifb, "1:60", "1:1", "60:", 6, 19e6, 94e6)->rate_now = r_wan * 0.2;
+
+    TcIface *lan = snapshot_iface(s, "brlan0-demo");
+    lan->has_root = lan->has_htb = lan->has_ingress = TRUE;
+    mock_class(lan, "1:1", NULL, NULL, 0, 985e6, 985e6)->rate_now = r_lan;
+    mock_path(lan, "brlan0_loc_ifb-demo", FALSE, "dst 192.168.1.1", TRUE, r_loc);
+    mock_path(lan, "brlan0_fwr_ifb-demo", TRUE, "весь трафик", FALSE, r_lan);
+
+    TcIface *lifb = snapshot_iface(s, "brlan0_loc_ifb-demo");
+    lifb->has_root = lifb->has_htb = TRUE;
+    mock_class(lifb, "1:1",  NULL,  NULL,  0, 100e6, 100e6)->rate_now = r_loc;
+    mock_class(lifb, "1:30", "1:1", "30:", 3, 50e6, 99e6)->rate_now = r_loc * 0.8;
+    mock_class(lifb, "1:40", "1:1", "40:", 4, 50e6, 98e6)->rate_now = r_loc * 0.2;
+
+    TcIface *fifb = snapshot_iface(s, "brlan0_fwr_ifb-demo");
+    fifb->has_root = fifb->has_htb = TRUE;
+    mock_class(fifb, "1:1",  NULL,  NULL,  0, 100e6, 100e6)->rate_now = r_lan;
+    mock_class(fifb, "1:30", "1:1", "30:", 3, 50e6, 99e6)->rate_now = r_lan * 0.85;
+    mock_class(fifb, "1:40", "1:1", "40:", 4, 50e6, 98e6)->rate_now = r_lan * 0.15;
+
+    /* referenced: ifb скрыть с верхнего уровня */
+    snapshot_find_iface(s, "wan0_ifb-demo")->referenced = TRUE;
+    snapshot_find_iface(s, "brlan0_loc_ifb-demo")->referenced = TRUE;
+    snapshot_find_iface(s, "brlan0_fwr_ifb-demo")->referenced = TRUE;
+
+    /* top: только физические */
+    g_ptr_array_add(s->top, wan);
+    g_ptr_array_add(s->top, lan);
+
+    for (guint i = 0; i < s->ifaces->len; i++) {
+        TcIface *ifc = g_ptr_array_index(s->ifaces, i);
+        assign_depth(ifc->classes);
+        if (ifc->classes->len > 1)
+            g_ptr_array_sort(ifc->classes, class_cmp);
+    }
+    return s;
+}
+
+/* =============================== UI =============================== */
+
+typedef struct {
+    GtkLabel       *rate;
+    GtkProgressBar *bar;
+    GtkLabel       *stats;
+} CardRefs;
+
+typedef struct { double v[HISTORY_LEN]; int len; } History;
+
+typedef struct {
+    GtkApplication *app;
+    GtkWidget      *win;
+    GtkWidget      *header;
+    GtkWidget      *btn_pause;
+    GtkWidget      *spin;
+    GtkLabel       *status;
+    GtkTreeStore   *store;
+    GtkWidget      *tree;
+    GtkWidget      *cards_box;
+    GtkLabel       *info;
+    GtkWidget      *graph;
+
+    GThread        *worker;
+    gint           worker_run;
+    gint           paused;
+    gint           interval_ms;
+    char           *tc_path;
+    char           *ip_path;
+
+    Snapshot       *cur;         /* текущий применённый снапшот          */
+    GHashTable     *cards;       /* classid -> CardRefs*                 */
+    char           *cards_dev;   /* устройство, чьи карточки показаны    */
+    guint          cards_count;
+    GHashTable     *hist;        /* ключ сайдбара -> History*            */
+    char           *sel_key;
+    GKeyFile       *names;       /* [dev] classid = Имя                  */
+} App;
+
+static App APP;
+
+enum { COL_KEY, COL_NAME, COL_BADGE, COL_RATE, N_COLS };
+
+/* --- разбор ключа сайдбара: "dev" | "dev|egress" | "dev|ing|ifb" --- */
+static void parse_key(const char *key, char **dev, char **ifb, gboolean *is_ing)
+{
+    *dev = *ifb = NULL;
+    *is_ing = FALSE;
+    const char *p1 = key ? strchr(key, '|') : NULL;
+    if (!p1) { *dev = g_strdup(key); return; }
+    *dev = g_strndup(key, (gsize)(p1 - key));
+    if (!strncmp(p1, "|ing|", 5)) {
+        *is_ing = TRUE;
+        *ifb = g_strdup(p1 + 5);
+    }
+}
+
+static double rate_for_key(Snapshot *s, const char *key)
+{
+    char *dev = NULL, *ifb = NULL;
+    gboolean is_ing = FALSE;
+    double r = 0;
+
+    parse_key(key, &dev, &ifb, &is_ing);
+    TcIface *ifc = snapshot_find_iface(s, dev);
+    if (is_ing) {
+        if (ifc)
+            for (guint k = 0; k < ifc->paths->len; k++) {
+                TcIngressPath *p = g_ptr_array_index(ifc->paths, k);
+                if (ifb && !strcmp(p->ifb, ifb)) r += p->rate_now;
+            }
+    } else if (ifc) {
+        r += iface_classes_rate(ifc);
+        if (!strstr(key, "|egress")) r += iface_paths_rate(ifc);
+    }
+    g_free(dev); g_free(ifb);
+    return r;
+}
+
+static void hist_push(const char *key, double r)
+{
+    History *h = g_hash_table_lookup(APP.hist, key);
+    if (!h) {
+        h = g_new0(History, 1);
+        g_hash_table_insert(APP.hist, g_strdup(key), h);
+    }
+    if (h->len < HISTORY_LEN) h->v[h->len++] = r;
+    else {
+        memmove(h->v, h->v + 1, sizeof(double) * (HISTORY_LEN - 1));
+        h->v[HISTORY_LEN - 1] = r;
+    }
+}
+
+static char *ingress_child_label(const TcIngressPath *p, guint npaths)
+{
+    if (p->is_local) return g_strdup("Входящий: локальный (на хост)");
+    if (p->matchall) return g_strdup(npaths > 1 ? "Входящий: форвард (остальное)"
+                                                : "Входящий: весь входящий");
+    return g_strdup_printf("Входящий: %s", p->desc ? p->desc : "?");
+}
+
+static char *auto_tag(const TcClass *cl)
+{
+    GString *g = g_string_new(NULL);
+    if (cl->prio >= 0) g_string_append_printf(g, "prio %d", cl->prio);
+    if (cl->leaf) {
+        if (g->len) g_string_append(g, " · ");
+        g_string_append_printf(g, "leaf %s", cl->leaf);
+    }
+    if (!g->len) g_string_append(g, "класс HTB");
+    return g_string_free(g, FALSE);
+}
+
+/* --- дерево: поиск/вставка/чистка строк --- */
+
+static gboolean find_row_by_key(GtkTreeStore *st, GtkTreeIter *parent,
+                                const char *key, GtkTreeIter *out)
+{
+    GtkTreeModel *m = GTK_TREE_MODEL(st);
+    GtkTreeIter it;
+    gboolean ok = parent ? gtk_tree_model_iter_children(m, &it, parent)
+                         : gtk_tree_model_get_iter_first(m, &it);
+    while (ok) {
+        char *k = NULL;
+        gtk_tree_model_get(m, &it, COL_KEY, &k, -1);
+        gboolean eq = (k && !strcmp(k, key));
+        g_free(k);
+        if (eq) { *out = it; return TRUE; }
+        ok = gtk_tree_model_iter_next(m, &it);
+    }
+    return FALSE;
+}
+
+static void upsert_row(const char *key, const char *name, const char *badge,
+                       GtkTreeIter *parent, GtkTreeIter *out, gboolean *created)
+{
+    if (find_row_by_key(APP.store, parent, key, out)) {
+        if (created) *created = FALSE;
+        return;
+    }
+    gtk_tree_store_append(APP.store, out, parent);
+    gtk_tree_store_set(APP.store, out,
+                       COL_KEY, key, COL_NAME, name,
+                       COL_BADGE, badge, COL_RATE, "—", -1);
+    if (created) *created = TRUE;
+}
+
+static void remove_stale(GtkTreeIter *parent, GHashTable *present)
+{
+    GtkTreeModel *m = GTK_TREE_MODEL(APP.store);
+    GtkTreeIter it;
+    gboolean ok = parent ? gtk_tree_model_iter_children(m, &it, parent)
+                         : gtk_tree_model_get_iter_first(m, &it);
+    while (ok) {
+        char *k = NULL;
+        gtk_tree_model_get(m, &it, COL_KEY, &k, -1);
+        GtkTreeIter victim = it;
+        ok = gtk_tree_model_iter_next(m, &it);
+        if (!k || !g_hash_table_contains(present, k))
+            gtk_tree_store_remove(APP.store, &victim);
+        g_free(k);
+    }
+}
+
+/* --- карточки классов --- */
+
+static void cb_destroy_widget(GtkWidget *w, gpointer data)
+{
+    (void) data;
+    gtk_widget_destroy(w);
+}
+
+static void cards_clear(void)
+{
+    gtk_container_foreach(GTK_CONTAINER(APP.cards_box), cb_destroy_widget, NULL);
+    g_hash_table_remove_all(APP.cards);
+    g_free(APP.cards_dev);
+    APP.cards_dev = NULL;
+    APP.cards_count = 0;
+}
+
+static char *class_display_name(const char *dev, const char *classid)
+{
+    if (!APP.names) return NULL;
+    return g_key_file_get_string(APP.names, dev, classid, NULL);
+}
+
+static GtkWidget *make_card(const char *dev, TcClass *cl)
+{
+    GtkWidget *frame = gtk_frame_new(NULL);
+    gtk_frame_set_shadow_type(GTK_FRAME(frame), GTK_SHADOW_ETCHED_IN);
+
+    /* визуальная вложенность HTB-иерархии */
+    gtk_widget_set_margin_start(frame, cl->depth * CARD_INDENT_PX);
+
+    /* заголовок: classid + имя (из конфига) или авто-тег */
+    GtkWidget *lh = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    char *m1 = g_strdup_printf("<b>%s</b>", cl->classid);
+    GtkWidget *l_id = gtk_label_new(NULL);
+    gtk_label_set_markup(GTK_LABEL(l_id), m1);
+    gtk_box_pack_start(GTK_BOX(lh), l_id, FALSE, FALSE, 0);
+
+    char *nm = class_display_name(dev, cl->classid);
+    char *tag = nm ? g_strdup(nm) : auto_tag(cl);
+    char *m2 = g_strdup_printf("<span foreground='#607d8b' size='small'>%s</span>", tag);
+    GtkWidget *l_tag = gtk_label_new(NULL);
+    gtk_label_set_markup(GTK_LABEL(l_tag), m2);
+    gtk_box_pack_end(GTK_BOX(lh), l_tag, FALSE, FALSE, 0);
+    gtk_frame_set_label_widget(GTK_FRAME(frame), lh);
+
+    GtkWidget *grid = gtk_grid_new();
+    gtk_grid_set_row_spacing(GTK_GRID(grid), 3);
+    gtk_grid_set_column_spacing(GTK_GRID(grid), 10);
+    gtk_container_set_border_width(GTK_CONTAINER(grid), 6);
+
+    CardRefs *cr = g_new0(CardRefs, 1);
+
+    char *rt = fmt_rate(cl->rate_now);
+    char *ct = cl->ceil_bps > 0 ? fmt_rate(cl->ceil_bps) : g_strdup("—");
+    char *m3 = g_strdup_printf("<span size='large'><b>%s</b></span> <span foreground='#78909c'>/ %s</span>", rt, ct);
+    cr->rate = GTK_LABEL(gtk_label_new(NULL));
+    gtk_label_set_markup(cr->rate, m3);
+    gtk_label_set_xalign(cr->rate, 0.0);
+    gtk_grid_attach(GTK_GRID(grid), GTK_WIDGET(cr->rate), 0, 0, 1, 1);
+
+    cr->bar = GTK_PROGRESS_BAR(gtk_progress_bar_new());
+    gtk_progress_bar_set_show_text(cr->bar, TRUE);
+    gtk_widget_set_hexpand(GTK_WIDGET(cr->bar), TRUE);
+    gtk_grid_attach(GTK_GRID(grid), GTK_WIDGET(cr->bar), 0, 1, 2, 1);
+
+    cr->stats = GTK_LABEL(gtk_label_new(NULL));
+    gtk_label_set_xalign(cr->stats, 0.0);
+    gtk_grid_attach(GTK_GRID(grid), GTK_WIDGET(cr->stats), 0, 2, 2, 1);
+
+    gtk_container_add(GTK_CONTAINER(frame), grid);
+    g_hash_table_insert(APP.cards, g_strdup(cl->classid), cr);
+
+    g_free(m1); g_free(m2); g_free(m3); g_free(rt); g_free(ct); g_free(tag); g_free(nm);
+    return frame;
+}
+
+static void update_cards(Snapshot *s)
+{
+    if (!APP.cards_dev || !s) return;
+    TcIface *ifc = snapshot_find_iface(s, APP.cards_dev);
+    if (!ifc) return;
+
+    GHashTableIter it;
+    gpointer k, v;
+    g_hash_table_iter_init(&it, APP.cards);
+    while (g_hash_table_iter_next(&it, &k, &v)) {
+        const char *classid = k;
+        CardRefs *cr = v;
+        TcClass *cl = NULL;
+        for (guint i = 0; i < ifc->classes->len; i++) {
+            TcClass *x = g_ptr_array_index(ifc->classes, i);
+            if (!strcmp(x->classid, classid)) { cl = x; break; }
+        }
+        if (!cl) continue;
+
+        double frac = (cl->ceil_bps > 0) ? cl->rate_now / cl->ceil_bps : 0.0;
+        if (frac < 0) frac = 0;
+        if (frac > 1) frac = 1;
+        gtk_progress_bar_set_fraction(cr->bar, frac);
+        char *pt = g_strdup_printf("%.0f%%", frac * 100.0);
+        gtk_progress_bar_set_text(cr->bar, pt);
+        g_free(pt);
+
+        char *rt = fmt_rate(cl->rate_now);
+        char *ct = cl->ceil_bps > 0 ? fmt_rate(cl->ceil_bps) : g_strdup("—");
+        char *m = g_strdup_printf("<span size='large'><b>%s</b></span> <span foreground='#78909c'>/ %s</span>", rt, ct);
+        gtk_label_set_markup(cr->rate, m);
+        g_free(rt); g_free(ct); g_free(m);
+
+        const char *backlog = backlog_for_class(ifc, cl);
+        char *m2 = g_strdup_printf(
+            "<small><span foreground='#78909c'>Дропы: %llu · Оверлимиты: %llu · Бэклог: %s</span></small>",
+            (unsigned long long) cl->dropped,
+            (unsigned long long) cl->overlimits,
+            backlog ? backlog : cl->backlog ? cl->backlog : "—");
+        gtk_label_set_markup(cr->stats, m2);
+        g_free(m2);
+    }
+}
+
+static void rebuild_cards(Snapshot *s)
+{
+    cards_clear();
+
+    char *dev = NULL, *ifb = NULL;
+    gboolean is_ing = FALSE;
+    parse_key(APP.sel_key, &dev, &ifb, &is_ing);
+    const char *dn = is_ing ? ifb : dev;
+
+    TcIface *ifc = (s && dn) ? snapshot_find_iface(s, dn) : NULL;
+    if (!ifc || ifc->classes->len == 0) {
+        char *m = g_strdup_printf("<i>%s</i>", dn
+                ? _("Нет классов HTB на этом узле")
+                : _("Выберите устройство в дереве слева"));
+        gtk_label_set_markup(APP.info, m);
+        g_free(m);
+        g_free(dev); g_free(ifb);
+        return;
+    }
+
+    char *sum = fmt_rate(iface_classes_rate(ifc));
+    char *info = g_strdup_printf(
+        "Иерархия: <b>%s</b> · классов: %u · сумма: <b>%s</b>",
+        dn, (guint) ifc->classes->len, sum);
+    gtk_label_set_markup(APP.info, info);
+    g_free(sum); g_free(info);
+
+    for (guint i = 0; i < ifc->classes->len; i++) {
+        TcClass *cl = g_ptr_array_index(ifc->classes, i);
+        GtkWidget *card = make_card(dn, cl);
+        gtk_box_pack_start(GTK_BOX(APP.cards_box), card, FALSE, FALSE, 0);
+    }
+    APP.cards_dev = g_strdup(dn);
+    APP.cards_count = ifc->classes->len;
+
+    update_cards(s);
+    gtk_widget_show_all(APP.cards_box);
+    g_free(dev); g_free(ifb);
+}
+
+/* --- применение снапшота (GUI-поток) --- */
+
+static void apply_snapshot(App *a, Snapshot *s);
+
+static gboolean apply_idle(gpointer data)
+{
+    Snapshot *s = data;
+    if (g_atomic_int_get(&APP.worker_run) && APP.win)
+        apply_snapshot(&APP, s);
+    else
+        snapshot_free(s);
+    return G_SOURCE_REMOVE;
+}
+
+static void apply_snapshot(App *a, Snapshot *s)
+{
+    snapshot_free(a->cur);
+    a->cur = s;
+
+    /* --- 1. актуализация дерева --- */
+    GHashTable *present = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+    gboolean created_any = FALSE;
+
+    for (guint i = 0; i < s->top->len; i++) {
+        TcIface *ifc = g_ptr_array_index(s->top, i);
+        GtkTreeIter dev_it;
+        gboolean created = FALSE;
+
+        upsert_row(ifc->name, ifc->name,
+                   ifc->is_ifb ? "<span foreground='#6a1b9a'>ifb</span>"
+                               : "<span foreground='#888888'>iface</span>",
+                   NULL, &dev_it, &created);
+        g_hash_table_add(present, g_strdup(ifc->name));
+        created_any |= created;
+
+        if (ifc->classes->len > 0 || ifc->has_htb) {
+            char *ck = g_strdup_printf("%s|egress", ifc->name);
+            GtkTreeIter ci;
+            upsert_row(ck, "Исходящий (egress)",
+                       "<span foreground='#2e7d32'>▲ egress</span>", &dev_it, &ci, &created);
+            g_hash_table_add(present, g_strdup(ck));
+            created_any |= created;
+            g_free(ck);
+        }
+        for (guint k = 0; k < ifc->paths->len; k++) {
+            TcIngressPath *p = g_ptr_array_index(ifc->paths, k);
+            char *ck = g_strdup_printf("%s|ing|%s", ifc->name, p->ifb);
+            char *nm = ingress_child_label(p, ifc->paths->len);
+            GtkTreeIter ci;
+            upsert_row(ck, nm, "<span foreground='#1565c0'>▼ ingress</span>", &dev_it, &ci, &created);
+            g_free(nm);
+            g_hash_table_add(present, g_strdup(ck));
+            created_any |= created;
+            g_free(ck);
+        }
+        remove_stale(&dev_it, present);
+    }
+    remove_stale(NULL, present);
+    if (created_any)
+        gtk_tree_view_expand_all(GTK_TREE_VIEW(a->tree));
+
+    /* --- 2. колонка скорости + история --- */
+    GtkTreeModel *m = GTK_TREE_MODEL(a->store);
+    GtkTreeIter it;
+    gboolean ok = gtk_tree_model_get_iter_first(m, &it);
+    while (ok) {
+        char *k = NULL;
+        gtk_tree_model_get(m, &it, COL_KEY, &k, -1);
+        if (k) {
+            double r = rate_for_key(s, k);
+            char *rt = fmt_rate(r);
+            gtk_tree_store_set(a->store, &it, COL_RATE, rt, -1);
+            hist_push(k, r);
+            g_free(rt);
+        }
+        g_free(k);
+        GtkTreeIter ch;
+        gboolean okc = gtk_tree_model_iter_children(m, &ch, &it);
+        while (okc) {
+            char *kc = NULL;
+            gtk_tree_model_get(m, &ch, COL_KEY, &kc, -1);
+            if (kc) {
+                double rc = rate_for_key(s, kc);
+                char *rtc = fmt_rate(rc);
+                gtk_tree_store_set(a->store, &ch, COL_RATE, rtc, -1);
+                hist_push(kc, rc);
+                g_free(rtc);
+            }
+            g_free(kc);
+            okc = gtk_tree_model_iter_next(m, &ch);
+        }
+        ok = gtk_tree_model_iter_next(m, &it);
+    }
+
+    g_hash_table_unref(present);
+
+    /* --- 3. выбор по умолчанию --- */
+    if (!a->sel_key && gtk_tree_model_get_iter_first(m, &it)) {
+        char *k = NULL;
+        gtk_tree_model_get(m, &it, COL_KEY, &k, -1);
+        if (k) {
+            a->sel_key = g_strdup(k);
+            g_free(k);
+            gtk_tree_selection_select_iter(
+                gtk_tree_view_get_selection(GTK_TREE_VIEW(a->tree)), &it);
+        }
+    }
+
+    /* --- 4. карточки: пересборка при смене узла/состава, иначе обновление --- */
+    char *want_dev = NULL, *want_ifb = NULL;
+    gboolean want_ing = FALSE;
+    parse_key(a->sel_key, &want_dev, &want_ifb, &want_ing);
+    const char *dn = want_ing ? want_ifb : want_dev;
+    TcIface *sel_ifc = dn ? snapshot_find_iface(s, dn) : NULL;
+    if (!dn || !sel_ifc || sel_ifc->classes->len != a->cards_count ||
+        (a->cards_dev && strcmp(dn, a->cards_dev) != 0) || !a->cards_dev)
+        rebuild_cards(s);
+    else
+        update_cards(s);
+    g_free(want_dev); g_free(want_ifb);
+
+    /* --- 5. инфострока --- */
+    if (a->sel_key) {
+        double r = rate_for_key(s, a->sel_key);
+        char *rt = fmt_rate(r);
+        char *m = g_strdup_printf("Узел: <b>%s</b> · скорость: <b>%s</b>", a->sel_key, rt);
+        gtk_label_set_markup(a->info, m);
+        g_free(m); g_free(rt);
+    }
+
+    /* --- 6. статус --- */
+    {
+        GDateTime *dt = g_date_time_new_now_local();
+        char *ts = g_date_time_format(dt, "%H:%M:%S");
+        char *st;
+        if (s->mock)
+            st = g_strdup_printf("<span size='small' foreground='#e65100'>ДЕМО: tc не найден — показаны мок-данные · период %d с · обновлено %s</span>",
+                                 (int)(g_atomic_int_get(&a->interval_ms) / 1000), ts);
+        else if (s->error)
+            st = g_strdup_printf("<span size='small' foreground='#c62828'>ошибка: %s · период %d с</span>", s->error,
+                                 (int)(g_atomic_int_get(&a->interval_ms) / 1000));
+        else
+            st = g_strdup_printf("<span size='small' foreground='#607d8b'>обновлено %s · период %d с · tc: %s</span>",
+                                 ts, (int)(g_atomic_int_get(&a->interval_ms) / 1000), a->tc_path);
+        gtk_label_set_markup(a->status, st);
+        gtk_header_bar_set_subtitle(GTK_HEADER_BAR(a->header),
+                                    s->mock ? "ДЕМО-режим" : g_get_host_name());
+        g_free(st); g_free(ts); g_date_time_unref(dt);
+    }
+
+    gtk_widget_queue_draw(a->graph);
+}
+
+/* --- график: 60-секундная история выбранного узла --- */
+
+static double nice_ceil(double x)
+{
+    if (x <= 0) return 1e6;
+    double e = pow(10.0, floor(log10(x)));
+    double m = x / e;
+    return (m <= 1 ? 1 : m <= 2 ? 2 : m <= 5 ? 5 : 10) * e;
+}
+
+static gboolean on_graph_draw(GtkWidget *w, cairo_t *cr, gpointer data)
+{
+    (void) data;
+    GtkAllocation al;
+    gtk_widget_get_allocation(w, &al);
+    double W = al.width, H = al.height;
+
+    /* фон */
+    cairo_set_source_rgb(cr, 0.075, 0.082, 0.10);
+    cairo_rectangle(cr, 0, 0, W, H);
+    cairo_fill(cr);
+
+    History *h = APP.sel_key ? g_hash_table_lookup(APP.hist, APP.sel_key) : NULL;
+
+    double maxv = 1.0;
+    if (h)
+        for (int i = 0; i < h->len; i++)
+            if (h->v[i] > maxv) maxv = h->v[i];
+    maxv = nice_ceil(maxv * 1.15);
+
+    /* сетка */
+    cairo_set_source_rgb(cr, 0.17, 0.19, 0.22);
+    cairo_set_line_width(cr, 1.0);
+    for (int g = 1; g <= 3; g++) {
+        double y = H * g / 4.0;
+        cairo_move_to(cr, 0, y);
+        cairo_line_to(cr, W, y);
+        cairo_stroke(cr);
+    }
+
+    gboolean ingress = APP.sel_key && strstr(APP.sel_key, "|ing|");
+    double lr = ingress ? 0.39 : 0.40;
+    double lg = ingress ? 0.71 : 0.69;
+    double lb = ingress ? 0.96 : 0.42;
+
+    if (h && h->len >= 1) {
+        double pad_top = 18, pad_bot = 4;
+        double gh = H - pad_top - pad_bot;
+        double step = W / (double)(HISTORY_LEN - 1);
+
+        /* линия: новейшая точка — у правого края */
+        cairo_set_source_rgb(cr, lr, lg, lb);
+        cairo_set_line_width(cr, 1.6);
+        for (int i = 0; i < h->len; i++) {
+            double x = W - (h->len - 1 - i) * step;
+            double y = H - pad_bot - (h->v[i] / maxv) * gh;
+            if (i == 0) cairo_move_to(cr, x, y);
+            else cairo_line_to(cr, x, y);
+        }
+        cairo_stroke(cr);
+
+        /* заливка под линией */
+        for (int i = h->len - 1; i >= 0; i--) {
+            double x = W - (h->len - 1 - i) * step;
+            double y = H - pad_bot - (h->v[i] / maxv) * gh;
+            if (i == h->len - 1) cairo_move_to(cr, x, y);
+            else cairo_line_to(cr, x, y);
+        }
+        cairo_line_to(cr, W - 0, H - pad_bot);
+        cairo_line_to(cr, W - (h->len - 1) * step, H - pad_bot);
+        cairo_close_path(cr);
+        cairo_set_source_rgba(cr, lr, lg, lb, 0.15);
+        cairo_fill(cr);
+
+        /* подписи */
+        char *cur = fmt_rate(h->v[h->len - 1]);
+        char *mx = fmt_rate(maxv);
+        PangoLayout *pl = gtk_widget_create_pango_layout(w, NULL);
+        char *m1 = g_strdup_printf("<span foreground='#cfd8dc' size='small'><b>сейчас: %s</b></span>", cur);
+        pango_layout_set_markup(pl, m1, -1);
+        cairo_move_to(cr, 8, 4);
+        pango_cairo_show_layout(cr, pl);
+        g_object_unref(pl);
+        g_free(m1); g_free(cur);
+
+        pl = gtk_widget_create_pango_layout(w, NULL);
+        char *m2 = g_strdup_printf("<span foreground='#78909c' size='small'>шкала: %s</span>", mx);
+        pango_layout_set_markup(pl, m2, -1);
+        int pw = 0, ph = 0;
+        pango_layout_get_pixel_size(pl, &pw, &ph);
+        cairo_move_to(cr, W - pw - 8, 4);
+        pango_cairo_show_layout(cr, pl);
+        g_object_unref(pl);
+        g_free(m2); g_free(mx);
+    } else {
+        PangoLayout *pl = gtk_widget_create_pango_layout(w, NULL);
+        pango_layout_set_markup(pl, "<span foreground='#90a4ae'>нет данных — выберите узел слева</span>", -1);
+        cairo_move_to(cr, 10, H / 2 - 8);
+        pango_cairo_show_layout(cr, pl);
+        g_object_unref(pl);
+    }
+    return FALSE;
+}
+
+/* =========================== СИГНАЛЫ =========================== */
+
+static void on_sel_changed(GtkTreeSelection *sel, gpointer data)
+{
+    (void) data;
+    GtkTreeIter it;
+    char *k = NULL;
+    if (gtk_tree_selection_get_selected(sel, NULL, &it))
+        gtk_tree_model_get(GTK_TREE_MODEL(APP.store), &it, COL_KEY, &k, -1);
+    g_free(APP.sel_key);
+    APP.sel_key = k;
+    rebuild_cards(APP.cur);
+    gtk_widget_queue_draw(APP.graph);
+}
+
+static void on_pause_toggled(GtkToggleButton *b, gpointer data)
+{
+    App *a = data;
+    g_atomic_int_set(&a->paused, gtk_toggle_button_get_active(b) ? 1 : 0);
+}
+
+static void on_interval_changed(GtkSpinButton *b, gpointer data)
+{
+    App *a = data;
+    g_atomic_int_set(&a->interval_ms, (gint)(gtk_spin_button_get_value(b) * 1000.0));
+}
+
+/* =========================== РАБОЧИЙ ПОТОК =========================== */
+
+static gpointer worker_loop(gpointer data)
+{
+    App *a = data;
+    Collector *c = collector_new();
+    g_free(c->tc); c->tc = g_strdup(a->tc_path);
+    g_free(c->ip); c->ip = g_strdup(a->ip_path);
+
+    while (g_atomic_int_get(&a->worker_run)) {
+        if (!g_atomic_int_get(&a->paused)) {
+            Snapshot *s = collect_snapshot(c);
+            g_idle_add_full(G_PRIORITY_DEFAULT_IDLE, apply_idle, s, NULL);
+        }
+        /* спим интервал порциями по 50 мс — быстро реагируем на стоп/паузу */
+        int left = (int) g_atomic_int_get(&a->interval_ms);
+        while (left > 0 && g_atomic_int_get(&a->worker_run)) {
+            g_usleep(50000);
+            left -= 50;
+        }
+    }
+    collector_free(c);
+    return NULL;
+}
+
+/* =========================== СБОРКА UI =========================== */
+
+static GtkWidget *make_left(void)
+{
+    GtkWidget *sc = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sc),
+                                   GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+
+    APP.store = gtk_tree_store_new(N_COLS, G_TYPE_STRING, G_TYPE_STRING,
+                                   G_TYPE_STRING, G_TYPE_STRING);
+    APP.tree = gtk_tree_view_new_with_model(GTK_TREE_MODEL(APP.store));
+    gtk_tree_view_set_headers_visible(GTK_TREE_VIEW(APP.tree), TRUE);
+
+    GtkCellRenderer *r;
+    GtkTreeViewColumn *c;
+
+    r = gtk_cell_renderer_text_new();
+    g_object_set(r, "ellipsize", PANGO_ELLIPSIZE_END, NULL);
+    c = gtk_tree_view_column_new_with_attributes(_("Устройство / узел"), r,
+                                                 "text", COL_NAME, NULL);
+    gtk_tree_view_column_set_expand(c, TRUE);
+    gtk_tree_view_append_column(GTK_TREE_VIEW(APP.tree), c);
+
+    r = gtk_cell_renderer_text_new();
+    c = gtk_tree_view_column_new_with_attributes(_("Направление"), r,
+                                                 "markup", COL_BADGE, NULL);
+    gtk_tree_view_append_column(GTK_TREE_VIEW(APP.tree), c);
+
+    r = gtk_cell_renderer_text_new();
+    g_object_set(r, "xalign", 1.0, "family", "monospace", NULL);
+    c = gtk_tree_view_column_new_with_attributes(_("Скорость"), r,
+                                                 "text", COL_RATE, NULL);
+    gtk_tree_view_append_column(GTK_TREE_VIEW(APP.tree), c);
+
+    GtkTreeSelection *sel = gtk_tree_view_get_selection(GTK_TREE_VIEW(APP.tree));
+    gtk_tree_selection_set_mode(sel, GTK_SELECTION_BROWSE);
+    g_signal_connect(sel, "changed", G_CALLBACK(on_sel_changed), NULL);
+
+    gtk_container_add(GTK_CONTAINER(sc), APP.tree);
+    gtk_widget_set_size_request(sc, 300, -1);
+    return sc;
+}
+
+static GtkWidget *make_right(void)
+{
+    GtkWidget *v = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    gtk_container_set_border_width(GTK_CONTAINER(v), 6);
+
+    APP.info = GTK_LABEL(gtk_label_new(_("Выберите устройство слева")));
+    gtk_label_set_xalign(APP.info, 0.0);
+    gtk_box_pack_start(GTK_BOX(v), GTK_WIDGET(APP.info), FALSE, FALSE, 0);
+
+    GtkWidget *sc = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sc),
+                                   GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+    APP.cards_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    gtk_container_add(GTK_CONTAINER(sc), APP.cards_box);
+    gtk_box_pack_start(GTK_BOX(v), sc, TRUE, TRUE, 0);
+    return v;
+}
+
+static void build_ui(App *a)
+{
+    a->win = gtk_application_window_new(a->app);
+    gtk_window_set_default_size(GTK_WINDOW(a->win), 1280, 860);
+
+    GtkWidget *hb = gtk_header_bar_new();
+    gtk_header_bar_set_show_close_button(GTK_HEADER_BAR(hb), TRUE);
+    gtk_header_bar_set_title(GTK_HEADER_BAR(hb), _("Шейпинг tc — обзор"));
+    gtk_header_bar_set_has_subtitle(GTK_HEADER_BAR(hb), TRUE);
+    gtk_header_bar_set_subtitle(GTK_HEADER_BAR(hb), g_get_host_name());
+    gtk_window_set_titlebar(GTK_WINDOW(a->win), hb);
+    a->header = hb;
+
+    a->btn_pause = gtk_toggle_button_new_with_label(_("Пауза"));
+    gtk_widget_set_tooltip_text(a->btn_pause, _("Приостановить/возобновить опрос"));
+    g_signal_connect(a->btn_pause, "toggled", G_CALLBACK(on_pause_toggled), a);
+    gtk_header_bar_pack_start(GTK_HEADER_BAR(hb), a->btn_pause);
+
+    a->spin = gtk_spin_button_new_with_range(1, 10, 1);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(a->spin), DEF_INTERVAL_MS / 1000);
+    gtk_widget_set_tooltip_text(a->spin, _("Период опроса, с"));
+    g_signal_connect(a->spin, "value-changed", G_CALLBACK(on_interval_changed), a);
+    gtk_header_bar_pack_start(GTK_HEADER_BAR(hb), a->spin);
+
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    gtk_container_set_border_width(GTK_CONTAINER(vbox), 6);
+
+    GtkWidget *hp = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL);
+    gtk_paned_pack1(GTK_PANED(hp), make_left(), TRUE, FALSE);
+    gtk_paned_pack2(GTK_PANED(hp), make_right(), TRUE, FALSE);
+    gtk_paned_set_position(GTK_PANED(hp), 340);
+    gtk_box_pack_start(GTK_BOX(vbox), hp, TRUE, TRUE, 0);
+
+    GtkWidget *gframe = gtk_frame_new(_("История скорости (последние 60 отсчётов)"));
+    gtk_container_set_border_width(GTK_CONTAINER(gframe), 2);
+    a->graph = gtk_drawing_area_new();
+    gtk_widget_set_size_request(a->graph, -1, 150);
+    g_signal_connect(a->graph, "draw", G_CALLBACK(on_graph_draw), a);
+    gtk_container_add(GTK_CONTAINER(gframe), a->graph);
+    gtk_box_pack_start(GTK_BOX(vbox), gframe, FALSE, FALSE, 0);
+
+    a->status = GTK_LABEL(gtk_label_new(NULL));
+    gtk_label_set_xalign(a->status, 0.0);
+    gtk_box_pack_start(GTK_BOX(vbox), GTK_WIDGET(a->status), FALSE, FALSE, 0);
+
+    gtk_container_add(GTK_CONTAINER(a->win), vbox);
+    gtk_widget_show_all(a->win);
+}
+
+/* ========================= ЖИЗНЕННЫЙ ЦИКЛ ========================= */
+
+static void load_names(App *a)
+{
+    char *p = g_build_filename(g_get_user_config_dir(), "shaping-view",
+                               "class-names.conf", NULL);
+    a->names = g_key_file_new();
+    if (!g_key_file_load_from_file(a->names, p, G_KEY_FILE_NONE, NULL)) {
+        g_key_file_free(a->names);
+        a->names = NULL;
+    }
+    g_free(p);
+}
+
+static void on_activate(GtkApplication *application, gpointer data)
+{
+    (void) application;
+    App *a = data;
+    if (a->win) { gtk_window_present(GTK_WINDOW(a->win)); return; }
+
+    a->tc_path = g_find_program_in_path("tc");
+    a->ip_path = g_find_program_in_path("ip");
+    load_names(a);
+    build_ui(a);
+
+    g_atomic_int_set(&a->worker_run, 1);
+    a->worker = g_thread_new("tc-collector", worker_loop, a);
+}
+
+static void on_shutdown(GtkApplication *application, gpointer data)
+{
+    (void) application;
+    App *a = data;
+    g_atomic_int_set(&a->worker_run, 0);
+    if (a->worker) { g_thread_join(a->worker); a->worker = NULL; }
+    snapshot_free(a->cur); a->cur = NULL;
+    if (a->cards) { g_hash_table_unref(a->cards); a->cards = NULL; }
+    if (a->hist)  { g_hash_table_unref(a->hist);  a->hist  = NULL; }
+    g_free(a->sel_key); a->sel_key = NULL;
+    g_free(a->cards_dev); a->cards_dev = NULL;
+    g_free(a->tc_path); a->tc_path = NULL;
+    g_free(a->ip_path); a->ip_path = NULL;
+    if (a->names) { g_key_file_free(a->names); a->names = NULL; }
+}
+
+int main(int argc, char **argv)
+{
+    setlocale(LC_ALL, "");
+#if ENABLE_NLS
+    bindtextdomain("shaping-view", NULL);
+    textdomain("shaping-view");
+#endif
+    (void) argc; (void) argv;
+
+    memset(&APP, 0, sizeof(APP));
+    APP.interval_ms = DEF_INTERVAL_MS;
+    APP.cards = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+    APP.hist  = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+
+    APP.app = gtk_application_new(APP_ID, G_APPLICATION_NON_UNIQUE);
+    g_signal_connect(APP.app, "activate", G_CALLBACK(on_activate), &APP);
+    g_signal_connect(APP.app, "shutdown", G_CALLBACK(on_shutdown), &APP);
+
+    int rc = g_application_run(G_APPLICATION(APP.app), argc, argv);
+    g_object_unref(APP.app);
+    return rc;
+}

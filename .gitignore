@@ -1,0 +1,4 @@
+shaping-view
+*.o
+*.mo
+core
