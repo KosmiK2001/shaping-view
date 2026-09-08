@@ -77,6 +77,20 @@ static char *fmt_rate(double bps)
     return g_strdup_printf("%.0f бит/с", bps);
 }
 
+/* палитра полос классов на графике (по порядку очередей) */
+typedef struct { double r, g, b; } Rgb;
+static const Rgb CLASS_PALETTE[10] = {
+    {0.30, 0.69, 0.31}, {0.26, 0.55, 0.86}, {1.00, 0.76, 0.03}, {0.91, 0.30, 0.24},
+    {0.61, 0.35, 0.84}, {0.00, 0.74, 0.74}, {0.94, 0.49, 0.70}, {0.55, 0.47, 0.34},
+    {0.51, 0.72, 0.20}, {0.45, 0.51, 0.63}
+};
+#define CLASS_PAL_N (sizeof(CLASS_PALETTE) / sizeof(CLASS_PALETTE[0]))
+
+static const Rgb *pal_color(guint idx)
+{
+    return &CLASS_PALETTE[idx % CLASS_PAL_N];
+}
+
 /* hex-IP из u32-матча: "c0a88901" -> "192.168.137.1" */
 static char *hex_to_ip(const char *hex)
 {
@@ -173,6 +187,8 @@ typedef struct {
     char     *name;
     gboolean  is_ifb;
     gboolean  referenced;  /* на устройство ссылается чужой mirred     */
+    gboolean  is_tunnel;   /* tun/tap: sysfs speed мусор (10G)         */
+    double    link_bps;    /* ёмкость линка из sysfs (мост — max)      */
     gboolean  has_root;
     gboolean  has_htb;
     gboolean  has_ingress;
@@ -393,6 +409,46 @@ static GPtrArray *get_host_ips(Collector *c)
     }
     g_clear_error(&err);
     return ips;
+}
+
+/* tun/tap-устройство? Ядро экспортирует /sys/class/net/<dev>/tun_flags */
+static gboolean iface_is_tunnel(const char *dev)
+{
+    char *p = g_build_filename("/sys/class/net", dev, "tun_flags", NULL);
+    gboolean r = g_file_test(p, G_FILE_TEST_EXISTS);
+    g_free(p);
+    return r;
+}
+
+/* скорость линка из sysfs, Мбит -> bps (0 = неизвестно) */
+static double read_sysfs_speed(const char *dev)
+{
+    char *p = g_build_filename("/sys/class/net", dev, "speed", NULL);
+    char *txt = NULL;
+    g_file_get_contents(p, &txt, NULL, NULL);
+    g_free(p);
+    double mb = 0;
+    if (txt) { mb = g_ascii_strtod(txt, NULL); g_free(txt); }
+    return mb > 0 ? mb * 1e6 : 0.0;
+}
+
+/* «сырая» ёмкость устройства: speed; для моста — max(speed, скорости портов).
+ * Вызывается ТОЛЬКО для не-туннелей: у tun sysfs speed = фиктивные 10 Гбит. */
+static double raw_capacity_bps(const char *dev)
+{
+    double best = read_sysfs_speed(dev);
+    char *brif = g_build_filename("/sys/class/net", dev, "brif", NULL);
+    GDir *d = g_dir_open(brif, 0, NULL);
+    if (d) {
+        const char *port;
+        while ((port = g_dir_read_name(d)) != NULL) {
+            double s = read_sysfs_speed(port);
+            if (s > best) best = s;   /* MAX: реалистичный потолок транзита */
+        }
+        g_dir_close(d);
+    }
+    g_free(brif);
+    return best;
 }
 
 /* (определена ниже в демо-секции) */
@@ -655,6 +711,13 @@ static Snapshot *collect_snapshot(Collector *c)
         }
     }
 
+    /* 6b) тип устройства и ёмкость линка (sysfs; туннелям speed не верим) */
+    for (guint i = 0; i < s->ifaces->len; i++) {
+        TcIface *ifc = g_ptr_array_index(s->ifaces, i);
+        ifc->is_tunnel = iface_is_tunnel(ifc->name);
+        ifc->link_bps = ifc->is_tunnel ? 0.0 : raw_capacity_bps(ifc->name);
+    }
+
     /* 7) верхний уровень: физические устройства с содержимым + автономные ifb */
     for (guint i = 0; i < s->ifaces->len; i++) {
         TcIface *ifc = g_ptr_array_index(s->ifaces, i);
@@ -782,7 +845,7 @@ typedef struct {
     GtkLabel       *stats;
 } CardRefs;
 
-typedef struct { double v[HISTORY_LEN]; int len; } History;
+typedef struct { double v[HISTORY_LEN]; int len; double rmax; } History;
 
 typedef struct {
     GtkApplication *app;
@@ -851,15 +914,6 @@ static gboolean match_pattern_list(const char *dev, GPtrArray *patterns)
     return FALSE;
 }
 
-/* tun/tap-устройство? Ядро экспортирует /sys/class/net/<dev>/tun_flags */
-static gboolean iface_is_tunnel(const char *dev)
-{
-    char *p = g_build_filename("/sys/class/net", dev, "tun_flags", NULL);
-    gboolean r = g_file_test(p, G_FILE_TEST_EXISTS);
-    g_free(p);
-    return r;
-}
-
 /* порядок правил: конфиг [groups] → признак туннеля → эвристика имени → железо */
 static PackKind classify_iface(const TcIface *ifc)
 {
@@ -869,7 +923,7 @@ static PackKind classify_iface(const TcIface *ifc)
     if (match_pattern_list(dev, APP.grp[PACK_VPNCLI])) return PACK_VPNCLI;
     if (match_pattern_list(dev, APP.grp[PACK_HW]))     return PACK_HW;
 
-    if (iface_is_tunnel(dev)) {
+    if (ifc->is_tunnel) {
         if (g_str_has_prefix(dev, "tap") ||
             strstr(dev, "server") || strstr(dev, "srv"))
             return PACK_VPNSRV;
@@ -888,6 +942,66 @@ static double rate_for_pack(Snapshot *s, PackKind pk)
             r += iface_classes_rate(ifc) + iface_paths_rate(ifc);
     }
     return r;
+}
+
+/* корневой класс HTB устройства (parent == NULL) */
+static TcClass *root_class_of(const TcIface *ifc)
+{
+    for (guint i = 0; ifc && i < ifc->classes->len; i++) {
+        TcClass *cl = g_ptr_array_index(ifc->classes, i);
+        if (!cl->parent) return cl;
+    }
+    return NULL;
+}
+
+/* физическая основа для VPN: первое «железное» устройство с корнем или линком */
+static TcIface *uplink_iface(Snapshot *s)
+{
+    for (guint i = 0; s && i < s->top->len; i++) {
+        TcIface *ifc = g_ptr_array_index(s->top, i);
+        if (ifc->is_ifb || ifc->is_tunnel) continue;
+        if (classify_iface(ifc) != PACK_HW) continue;
+        TcClass *rc = root_class_of(ifc);
+        if ((rc && rc->rate_bps > 0) || ifc->link_bps > 0) return ifc;
+    }
+    return NULL;
+}
+
+/* шкала графика узла. Приоритет: rate корня → link → аплинк; 0 = «по счётчикам».
+ * src_label — короткое имя источника для подписи. */
+static double scale_for_node(Snapshot *s, const char *key, char **src_label)
+{
+    char *dev = NULL, *ifb = NULL;
+    gboolean is_ing = FALSE;
+    double v = 0;
+
+    parse_key(key, &dev, &ifb, &is_ing);
+    /* для ingress-узла базой является родительское устройство */
+    TcIface *ifc = s ? snapshot_find_iface(s, is_ing ? ifb : dev) : NULL;
+    TcIface *base = (is_ing && dev) ? snapshot_find_iface(s, dev) : ifc;
+    TcClass *rc = root_class_of(base);
+
+    if (rc && rc->rate_bps > 0) {
+        if (src_label) *src_label = g_strdup("rate 1:1");
+        v = rc->rate_bps;
+    } else if (base && base->link_bps > 0) {
+        if (src_label) *src_label = g_strdup("link");
+        v = base->link_bps;
+    } else {
+        TcIface *up = uplink_iface(s);
+        TcClass *urc = up ? root_class_of(up) : NULL;
+        if (up && urc && urc->rate_bps > 0) {
+            if (src_label) *src_label = g_strdup_printf("uplink %s", up->name);
+            v = urc->rate_bps;
+        } else if (up && up->link_bps > 0) {
+            if (src_label) *src_label = g_strdup_printf("uplink %s (link)", up->name);
+            v = up->link_bps;
+        } else if (src_label) {
+            *src_label = g_strdup("по счётчикам");
+        }
+    }
+    g_free(dev); g_free(ifb);
+    return v;
 }
 
 static double rate_for_key(Snapshot *s, const char *key)
@@ -932,6 +1046,26 @@ static void hist_push(const char *key, double r)
         memmove(h->v, h->v + 1, sizeof(double) * (HISTORY_LEN - 1));
         h->v[HISTORY_LEN - 1] = r;
     }
+    if (r > h->rmax) h->rmax = r;
+    if (h->len == HISTORY_LEN) {   /* кольцо переполнилось — пересчёт окна */
+        double mx = 0;
+        for (int i = 0; i < h->len; i++)
+            if (h->v[i] > mx) mx = h->v[i];
+        h->rmax = mx;
+    }
+}
+
+static History *hist_get(const char *key)
+{
+    if (!key) return NULL;
+    return g_hash_table_lookup(APP.hist, key);
+}
+
+/* значение истории в слоте кольца 0..HISTORY_LEN-1 (справа выровнено) */
+static double hist_value_at(History *h, int slot)
+{
+    if (!h || slot < HISTORY_LEN - h->len) return 0.0;
+    return h->v[slot - (HISTORY_LEN - h->len)];
 }
 
 static char *ingress_child_label(const TcIngressPath *p, guint npaths)
@@ -1028,7 +1162,7 @@ static char *class_display_name(const char *dev, const char *classid)
     return g_key_file_get_string(APP.names, dev, classid, NULL);
 }
 
-static GtkWidget *make_card(const char *dev, TcClass *cl)
+static GtkWidget *make_card(const char *dev, TcClass *cl, guint cidx)
 {
     GtkWidget *frame = gtk_frame_new(NULL);
     gtk_frame_set_shadow_type(GTK_FRAME(frame), GTK_SHADOW_ETCHED_IN);
@@ -1036,9 +1170,14 @@ static GtkWidget *make_card(const char *dev, TcClass *cl)
     /* визуальная вложенность HTB-иерархии */
     gtk_widget_set_margin_start(frame, cl->depth * CARD_INDENT_PX);
 
-    /* заголовок: classid + имя (из конфига) или авто-тег */
+    /* заголовок: цветной маркер (цвет полосы на графике) + classid + имя/тег */
+    const Rgb *col = pal_color(cidx);
+    char *colhex = g_strdup_printf("#%02x%02x%02x",
+                                   (unsigned)(col->r * 255),
+                                   (unsigned)(col->g * 255),
+                                   (unsigned)(col->b * 255));
     GtkWidget *lh = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-    char *m1 = g_strdup_printf("<b>%s</b>", cl->classid);
+    char *m1 = g_strdup_printf("<span foreground='%s'>●</span> <b>%s</b>", colhex, cl->classid);
     GtkWidget *l_id = gtk_label_new(NULL);
     gtk_label_set_markup(GTK_LABEL(l_id), m1);
     gtk_box_pack_start(GTK_BOX(lh), l_id, FALSE, FALSE, 0);
@@ -1079,6 +1218,7 @@ static GtkWidget *make_card(const char *dev, TcClass *cl)
     g_hash_table_insert(APP.cards, g_strdup(cl->classid), cr);
 
     g_free(m1); g_free(m2); g_free(m3); g_free(rt); g_free(ct); g_free(tag); g_free(nm);
+    g_free(colhex);
     return frame;
 }
 
@@ -1155,7 +1295,7 @@ static void rebuild_cards(Snapshot *s)
 
     for (guint i = 0; i < ifc->classes->len; i++) {
         TcClass *cl = g_ptr_array_index(ifc->classes, i);
-        GtkWidget *card = make_card(dn, cl);
+        GtkWidget *card = make_card(dn, cl, i);
         gtk_box_pack_start(GTK_BOX(APP.cards_box), card, FALSE, FALSE, 0);
     }
     APP.cards_dev = g_strdup(dn);
@@ -1285,6 +1425,22 @@ static void apply_snapshot(App *a, Snapshot *s)
         ok = gtk_tree_model_iter_next(m, &it);
     }
 
+    /* --- 2b. истории по классам и сумме ingress (для стека графика) --- */
+    for (guint i = 0; i < s->ifaces->len; i++) {
+        TcIface *ifc = g_ptr_array_index(s->ifaces, i);
+        for (guint k = 0; k < ifc->classes->len; k++) {
+            TcClass *cl = g_ptr_array_index(ifc->classes, k);
+            char *hk = g_strdup_printf("cls|%s|%s", ifc->name, cl->classid);
+            hist_push(hk, cl->rate_now);
+            g_free(hk);
+        }
+        if (ifc->paths->len > 0) {
+            char *hk = g_strdup_printf("ingsum|%s", ifc->name);
+            hist_push(hk, iface_paths_rate(ifc));
+            g_free(hk);
+        }
+    }
+
     g_hash_table_unref(present);
 
     /* --- 3. выбор по умолчанию: первое выбираемое устройство (не пак) --- */
@@ -1378,85 +1534,233 @@ static gboolean on_graph_draw(GtkWidget *w, cairo_t *cr, gpointer data)
     cairo_rectangle(cr, 0, 0, W, H);
     cairo_fill(cr);
 
-    History *h = APP.sel_key ? g_hash_table_lookup(APP.hist, APP.sel_key) : NULL;
+    const char *key = APP.sel_key;
+    History *h = hist_get(key);
+    gboolean is_pack = (key && key[0] == '@');
+    gboolean is_ing  = (key && strstr(key, "|ing|"));
+    double step = W / (double)(HISTORY_LEN - 1);
 
-    double maxv = 1.0;
-    if (h)
-        for (int i = 0; i < h->len; i++)
-            if (h->v[i] > maxv) maxv = h->v[i];
-    maxv = nice_ceil(maxv * 1.15);
+    char *dev = NULL, *ifb = NULL;
+    gboolean ing_flag = FALSE;
+    parse_key(key, &dev, &ifb, &ing_flag);
+    const char *dev_name = is_ing ? ifb : dev;
+    TcIface *ifc = APP.cur ? snapshot_find_iface(APP.cur, dev_name) : NULL;
 
-    /* сетка */
+    /* ---------- пак: линия агрегата (стек по устройствам — позже) ---------- */
+    if (is_pack) {
+        double scale = (h && h->rmax > 0) ? nice_ceil(h->rmax * 1.05) : 1e6;
+        cairo_set_source_rgb(cr, 0.17, 0.19, 0.22);
+        cairo_set_line_width(cr, 1.0);
+        for (int g = 1; g <= 3; g++) {
+            double y = H * g / 4.0;
+            cairo_move_to(cr, 0, y); cairo_line_to(cr, W, y); cairo_stroke(cr);
+        }
+        if (h && h->len >= 1) {
+            cairo_set_source_rgb(cr, 0.57, 0.64, 0.71);
+            cairo_set_line_width(cr, 1.6);
+            for (int i = 0; i < h->len; i++) {
+                double x = W - (h->len - 1 - i) * step;
+                double y = H - 4 - (h->v[i] / scale) * (H - 22);
+                if (i == 0) cairo_move_to(cr, x, y);
+                else cairo_line_to(cr, x, y);
+            }
+            cairo_stroke(cr);
+        }
+        char *cur = fmt_rate(h && h->len ? h->v[h->len - 1] : 0);
+        PangoLayout *pl = gtk_widget_create_pango_layout(w, NULL);
+        char *m = g_strdup_printf("<span foreground='#cfd8dc' size='small'><b>%s</b></span>", cur);
+        pango_layout_set_markup(pl, m, -1);
+        cairo_move_to(cr, 8, 4);
+        pango_cairo_show_layout(cr, pl);
+        g_object_unref(pl);
+        g_free(m); g_free(cur);
+        g_free(dev); g_free(ifb);
+        return FALSE;
+    }
+
+    /* ---------- устройство/узел: стек классов в порядке очередей ---------- */
+
+    /* прямые дети корня — они и есть полосы стека */
+    guint nstk = 0;
+    guint idx[HISTORY_LEN];
+    if (ifc)
+        for (guint k = 0; k < ifc->classes->len && nstk < HISTORY_LEN; k++) {
+            TcClass *cl = g_ptr_array_index(ifc->classes, k);
+            if (cl->depth == 1) idx[nstk++] = k;
+        }
+
+    /* Σ прямых детей (для подписи и дельты) */
+    double dsum = 0;
+    for (guint k = 0; k < nstk; k++) {
+        TcClass *cl = g_ptr_array_index(ifc->classes, idx[k]);
+        dsum += cl->rate_now;
+    }
+    TcClass *rc = root_class_of(ifc);
+    double delta = rc ? rc->rate_now - dsum : 0.0;
+
+    /* шкала: rate корня → линк → аплинк → счётчики */
+    char *src = NULL;
+    double scale = scale_for_node(APP.cur, key, &src);
+    if (scale <= 0) scale = (h && h->rmax > 0) ? h->rmax : 1e6;
+
+    gboolean has_ing = (!is_ing && ifc && ifc->paths->len > 0);
+    double pad_t = 20, pad_b = 4, gap = 3;
+    double main_h, ing_h;
+    if (has_ing) {
+        main_h = (H - pad_t - pad_b - gap) * 0.72;
+        ing_h  = (H - pad_t - pad_b - gap) * 0.26;
+    } else {
+        main_h = H - pad_t - pad_b;
+        ing_h  = 0;
+    }
+    double base_y = pad_t + main_h;
+
+    /* сетка основной секции */
     cairo_set_source_rgb(cr, 0.17, 0.19, 0.22);
     cairo_set_line_width(cr, 1.0);
     for (int g = 1; g <= 3; g++) {
-        double y = H * g / 4.0;
+        double y = pad_t + main_h * g / 4.0;
         cairo_move_to(cr, 0, y);
         cairo_line_to(cr, W, y);
         cairo_stroke(cr);
     }
 
-    gboolean ingress = APP.sel_key && strstr(APP.sel_key, "|ing|");
-    double lr = ingress ? 0.39 : 0.40;
-    double lg = ingress ? 0.71 : 0.69;
-    double lb = ingress ? 0.96 : 0.42;
+    /* стек: кумулятивные полосы по слотам кольца */
+    double *lo = g_new0(double, (gsize)(nstk ? nstk : 1) * HISTORY_LEN);
+    double *hi = g_new0(double, (gsize)(nstk ? nstk : 1) * HISTORY_LEN);
+    double *run = g_new0(double, HISTORY_LEN);
 
-    if (h && h->len >= 1) {
-        double pad_top = 18, pad_bot = 4;
-        double gh = H - pad_top - pad_bot;
-        double step = W / (double)(HISTORY_LEN - 1);
+    for (guint kk = 0; kk < nstk; kk++) {
+        TcClass *cl = g_ptr_array_index(ifc->classes, idx[kk]);
+        const Rgb *col = pal_color(kk);
+        char *hk = g_strdup_printf("cls|%s|%s", dev_name, cl->classid);
+        History *hc = hist_get(hk);
+        g_free(hk);
 
-        /* линия: новейшая точка — у правого края */
-        cairo_set_source_rgb(cr, lr, lg, lb);
-        cairo_set_line_width(cr, 1.6);
-        for (int i = 0; i < h->len; i++) {
-            double x = W - (h->len - 1 - i) * step;
-            double y = H - pad_bot - (h->v[i] / maxv) * gh;
-            if (i == 0) cairo_move_to(cr, x, y);
-            else cairo_line_to(cr, x, y);
+        for (int s2 = 0; s2 < HISTORY_LEN; s2++) {
+            double v = hist_value_at(hc, s2);
+            double x = W - (HISTORY_LEN - 1 - s2) * step;
+            lo[kk * HISTORY_LEN + s2] = run[s2];
+            run[s2] += v;
+            hi[kk * HISTORY_LEN + s2] = run[s2];
+
+            double y = base_y - (run[s2] / scale) * main_h;
+            if (y < pad_t) y = pad_t;   /* клип при переполнении шкалы */
+            if (kk == 0) {
+                if (s2 == 0) cairo_move_to(cr, x, y);
+                else cairo_line_to(cr, x, y);
+            }
         }
+        cairo_set_source_rgba(cr, col->r, col->g, col->b, 0.40);
+        cairo_set_line_width(cr, 1.0);
         cairo_stroke(cr);
 
-        /* заливка под линией */
-        for (int i = h->len - 1; i >= 0; i--) {
-            double x = W - (h->len - 1 - i) * step;
-            double y = H - pad_bot - (h->v[i] / maxv) * gh;
-            if (i == h->len - 1) cairo_move_to(cr, x, y);
-            else cairo_line_to(cr, x, y);
+        /* полоса: верхняя граница этой очереди вниз до границы предыдущей */
+        for (int s2 = 0; s2 < HISTORY_LEN; s2++) {
+            double x = W - (HISTORY_LEN - 1 - s2) * step;
+            double y_top = base_y - (hi[kk * HISTORY_LEN + s2] / scale) * main_h;
+            if (y_top < pad_t) y_top = pad_t;
+            if (s2 == 0) cairo_move_to(cr, x, y_top);
+            else cairo_line_to(cr, x, y_top);
         }
-        cairo_line_to(cr, W - 0, H - pad_bot);
-        cairo_line_to(cr, W - (h->len - 1) * step, H - pad_bot);
+        for (int s2 = HISTORY_LEN - 1; s2 >= 0; s2--) {
+            double x = W - (HISTORY_LEN - 1 - s2) * step;
+            double y_lo = base_y - (lo[kk * HISTORY_LEN + s2] / scale) * main_h;
+            cairo_line_to(cr, x, y_lo);
+        }
         cairo_close_path(cr);
-        cairo_set_source_rgba(cr, lr, lg, lb, 0.15);
+        cairo_set_source_rgba(cr, col->r, col->g, col->b, 0.38);
         cairo_fill(cr);
 
-        /* подписи */
-        char *cur = fmt_rate(h->v[h->len - 1]);
-        char *mx = fmt_rate(maxv);
-        PangoLayout *pl = gtk_widget_create_pango_layout(w, NULL);
-        char *m1 = g_strdup_printf("<span foreground='#cfd8dc' size='small'><b>сейчас: %s</b></span>", cur);
-        pango_layout_set_markup(pl, m1, -1);
-        cairo_move_to(cr, 8, 4);
-        pango_cairo_show_layout(cr, pl);
-        g_object_unref(pl);
-        g_free(m1); g_free(cur);
-
-        pl = gtk_widget_create_pango_layout(w, NULL);
-        char *m2 = g_strdup_printf("<span foreground='#78909c' size='small'>шкала: %s</span>", mx);
-        pango_layout_set_markup(pl, m2, -1);
-        int pw = 0, ph = 0;
-        pango_layout_get_pixel_size(pl, &pw, &ph);
-        cairo_move_to(cr, W - pw - 8, 4);
-        pango_cairo_show_layout(cr, pl);
-        g_object_unref(pl);
-        g_free(m2); g_free(mx);
-    } else {
-        PangoLayout *pl = gtk_widget_create_pango_layout(w, NULL);
-        pango_layout_set_markup(pl, "<span foreground='#90a4ae'>нет данных — выберите узел слева</span>", -1);
-        cairo_move_to(cr, 10, H / 2 - 8);
-        pango_cairo_show_layout(cr, pl);
-        g_object_unref(pl);
+        /* подпись classid внутри полосы */
+        double hpx = (hi[kk * HISTORY_LEN + HISTORY_LEN - 1] -
+                      lo[kk * HISTORY_LEN + HISTORY_LEN - 1]) / scale * main_h;
+        if (hpx > 11) {
+            PangoLayout *pl = gtk_widget_create_pango_layout(w, NULL);
+            char *m = g_strdup_printf("<span foreground='#eceff1' size='small'>%s</span>", cl->classid);
+            pango_layout_set_markup(pl, m, -1);
+            int pw = 0, ph2 = 0;
+            pango_layout_get_pixel_size(pl, &pw, &ph2);
+            double mid = (hi[kk * HISTORY_LEN + HISTORY_LEN - 1] +
+                          lo[kk * HISTORY_LEN + HISTORY_LEN - 1]) / 2.0;
+            double my = base_y - (mid / scale) * main_h - ph2 / 2.0;
+            cairo_move_to(cr, W - pw - 6, my);
+            pango_cairo_show_layout(cr, pl);
+            g_object_unref(pl);
+            g_free(m);
+        }
     }
+    g_free(lo); g_free(hi); g_free(run);
+
+    /* ---------- ingress: серая полоса в отдельной нижней секции ---------- */
+    if (has_ing) {
+        double iy = pad_t + main_h + gap;
+        cairo_set_source_rgb(cr, 0.20, 0.22, 0.26);
+        cairo_move_to(cr, 0, iy - 1.5);
+        cairo_line_to(cr, W, iy - 1.5);
+        cairo_stroke(cr);
+
+        char *hk = g_strdup_printf("ingsum|%s", dev_name);
+        History *hs = hist_get(hk);
+        g_free(hk);
+        if (hs && hs->len >= 1) {
+            cairo_set_source_rgba(cr, 0.62, 0.66, 0.70, 0.38);
+            for (int s2 = 0; s2 < HISTORY_LEN; s2++) {
+                double v = hist_value_at(hs, s2);
+                double x = W - (HISTORY_LEN - 1 - s2) * step;
+                double y = iy + ing_h - (v / scale) * ing_h;
+                if (s2 == 0) cairo_move_to(cr, x, y);
+                else cairo_line_to(cr, x, y);
+            }
+            cairo_line_to(cr, W, iy + ing_h);
+            cairo_line_to(cr, W - (HISTORY_LEN - 1) * step, iy + ing_h);
+            cairo_close_path(cr);
+            cairo_fill(cr);
+        }
+        PangoLayout *pl = gtk_widget_create_pango_layout(w, NULL);
+        char *im = g_strdup_printf("<span foreground='#90a4ae' size='small'>ingress ↓ <b>%s</b></span>",
+                                   fmt_rate(iface_paths_rate(ifc)));
+        pango_layout_set_markup(pl, im, -1);
+        cairo_move_to(cr, 4, iy + 2);
+        pango_cairo_show_layout(cr, pl);
+        g_object_unref(pl);
+        g_free(im);
+    }
+
+    /* ---------- подписи: шкала · сейчас · дельта ---------- */
+    char *lbl1 = g_strdup_printf(
+        "<span foreground='#cfd8dc' size='small'>шкала: <b>%s</b> · %s</span>",
+        fmt_rate(scale), src ? src : "?");
+    char *lbl2 = g_strdup_printf(
+        "<span foreground='#cfd8dc' size='small'>сейчас: <b>%s</b></span>", fmt_rate(dsum));
+    char *dcol = (fabs(delta) > scale * 0.03) ? "#ffb300" : "#78909c";
+    char *lbl3 = g_strdup_printf(
+        "<span foreground='%s' size='small'>Δ корень−Σ: %s</span>", dcol, fmt_rate(delta));
+
+    PangoLayout *pl = gtk_widget_create_pango_layout(w, NULL);
+    pango_layout_set_markup(pl, lbl1, -1);
+    cairo_move_to(cr, 8, 3);
+    pango_cairo_show_layout(cr, pl);
+    g_object_unref(pl);
+
+    pl = gtk_widget_create_pango_layout(w, NULL);
+    pango_layout_set_markup(pl, lbl2, -1);
+    int pw = 0, ph = 0;
+    pango_layout_get_pixel_size(pl, &pw, &ph);
+    cairo_move_to(cr, W - pw - 8, 3);
+    pango_cairo_show_layout(cr, pl);
+    g_object_unref(pl);
+
+    pl = gtk_widget_create_pango_layout(w, NULL);
+    pango_layout_set_markup(pl, lbl3, -1);
+    pango_layout_get_pixel_size(pl, &pw, &ph);
+    cairo_move_to(cr, W - pw - 8, 20);
+    pango_cairo_show_layout(cr, pl);
+    g_object_unref(pl);
+
+    g_free(lbl1); g_free(lbl2); g_free(lbl3);
+    g_free(src);
+    g_free(dev); g_free(ifb);
     return FALSE;
 }
 
