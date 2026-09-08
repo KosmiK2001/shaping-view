@@ -865,6 +865,11 @@ typedef struct {
     GtkWidget      *vpaned;      /* вертикальный сплит: списки ↔ график  */
     GtkWidget      *hp;          /* верхняя панель (дерево + карточки)   */
     GtkWidget      *btn_expand;  /* «во всю высоту»                      */
+    GtkWidget      *grip;        /* видимая ручка границы графика        */
+    gboolean        grip_drag;
+    gint            grip_y0;
+    gint            grip_pos0;
+    gboolean        grip_hover;
 
     GThread        *worker;
     gint           worker_run;
@@ -1866,6 +1871,7 @@ static void on_expand_toggled(GtkToggleButton *b, App *a)
 {
     gboolean act = gtk_toggle_button_get_active(b);
     gtk_widget_set_visible(a->hp, !act);
+    if (a->grip) gtk_widget_set_visible(a->grip, !act);   /* ручка прячется вместе с верхом */
 }
 
 /* =========================== РАБОЧИЙ ПОТОК =========================== */
@@ -2201,6 +2207,82 @@ static void tray_update_status(Snapshot *s)
 #pragma GCC diagnostic pop
 #endif
 
+/* ============ РУЧКА ГРАФИКА: видимая граница, тянется левым кликом ============ */
+
+static gboolean grip_draw_cb(GtkWidget *w, cairo_t *cr, gpointer data)
+{
+    (void) data;
+    GtkAllocation al;
+    gtk_widget_get_allocation(w, &al);
+
+    /* тёмная база ручки */
+    cairo_set_source_rgb(cr, 0.13, 0.16, 0.19);
+    cairo_rectangle(cr, 0, 0, al.width, al.height);
+    cairo_fill(cr);
+
+    /* контрастная янтарная диагональная штриховка (ярче при наведении) */
+    double band_y = al.height / 2.0 - 2.5, band_h = 5.0;
+    cairo_save(cr);
+    cairo_rectangle(cr, 0, band_y, al.width, band_h);
+    cairo_clip(cr);
+    cairo_set_line_width(cr, 1.6);
+    for (double x = -band_h; x < al.width + band_h; x += 5.0) {
+        cairo_set_source_rgba(cr, 1.0, 0.70, 0.0, APP.grip_hover ? 0.95 : 0.55);
+        cairo_move_to(cr, x, band_y + band_h);
+        cairo_line_to(cr, x + band_h, band_y);
+        cairo_stroke(cr);
+    }
+    cairo_restore(cr);
+
+    /* тонкие тёмные кромки сверху/снизу */
+    cairo_set_source_rgb(cr, 0.04, 0.04, 0.05);
+    cairo_move_to(cr, 0, 0.5);
+    cairo_line_to(cr, al.width, 0.5);
+    cairo_move_to(cr, 0, al.height - 0.5);
+    cairo_line_to(cr, al.width, al.height - 0.5);
+    cairo_stroke(cr);
+    return FALSE;
+}
+
+static gboolean grip_button_cb(GtkWidget *w, GdkEventButton *e, gpointer data)
+{
+    (void) w; (void) data;
+    if (e->button != 1) return FALSE;
+    if (e->type == GDK_BUTTON_PRESS) {
+        APP.grip_drag  = TRUE;
+        APP.grip_y0    = (gint) e->y_root;
+        APP.grip_pos0  = gtk_paned_get_position(GTK_PANED(APP.vpaned));
+        gtk_grab_add(w);          /* тянем быстро — события не теряются */
+        return TRUE;
+    }
+    if (e->type == GDK_BUTTON_RELEASE) {
+        APP.grip_drag = FALSE;
+        gtk_grab_remove(w);
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static gboolean grip_motion_cb(GtkWidget *w, GdkEventMotion *e, gpointer data)
+{
+    (void) w; (void) data;
+    if (!APP.grip_drag) return FALSE;
+    gint pos = APP.grip_pos0 + (gint) e->y_root - APP.grip_y0;
+    GtkAllocation ta;
+    gtk_widget_get_allocation(APP.vpaned, &ta);
+    pos = CLAMP(pos, 120, ta.height - 60);
+    gtk_paned_set_position(GTK_PANED(APP.vpaned), pos);
+    return TRUE;
+}
+
+static gboolean grip_cross_cb(GtkWidget *w, GdkEventCrossing *e, gpointer data)
+{
+    (void) data;
+    APP.grip_hover = (e->type == GDK_ENTER_NOTIFY);
+    gtk_widget_queue_draw(w);
+    return FALSE;
+}
+
 /* =========================== СБОРКА UI =========================== */
 
 /* CSS: чёрный скруглённый фон чипов статистики в карточках */
@@ -2333,11 +2415,29 @@ static void build_ui(App *a)
     g_signal_connect(a->graph, "draw", G_CALLBACK(on_graph_draw), a);
     gtk_container_add(GTK_CONTAINER(gframe), a->graph);
 
+    /* видимая ручка границы: тянуть левым кликом (курсор ns-resize) */
+    APP.grip = gtk_drawing_area_new();
+    gtk_widget_set_has_window(APP.grip, TRUE);
+    gtk_widget_set_size_request(APP.grip, -1, 8);
+    gtk_widget_add_events(APP.grip, GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK |
+                                    GDK_POINTER_MOTION_MASK | GDK_ENTER_NOTIFY_MASK |
+                                    GDK_LEAVE_NOTIFY_MASK);
+    g_signal_connect(APP.grip, "draw", G_CALLBACK(grip_draw_cb), NULL);
+    g_signal_connect(APP.grip, "button-press-event", G_CALLBACK(grip_button_cb), NULL);
+    g_signal_connect(APP.grip, "button-release-event", G_CALLBACK(grip_button_cb), NULL);
+    g_signal_connect(APP.grip, "motion-notify-event", G_CALLBACK(grip_motion_cb), NULL);
+    g_signal_connect(APP.grip, "enter-notify-event", G_CALLBACK(grip_cross_cb), NULL);
+    g_signal_connect(APP.grip, "leave-notify-event", G_CALLBACK(grip_cross_cb), NULL);
+
+    GtkWidget *below = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_box_pack_start(GTK_BOX(below), APP.grip, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(below), gframe, TRUE, TRUE, 0);
+
     /* вертикальный сплиттер: тянем вниз — график растёт за счёт списков сверху */
     a->vpaned = gtk_paned_new(GTK_ORIENTATION_VERTICAL);
     a->hp = hp;
     gtk_paned_pack1(GTK_PANED(a->vpaned), hp, TRUE, TRUE);
-    gtk_paned_pack2(GTK_PANED(a->vpaned), gframe, TRUE, FALSE);
+    gtk_paned_pack2(GTK_PANED(a->vpaned), below, TRUE, FALSE);
     gtk_paned_set_position(GTK_PANED(a->vpaned), 620);
     gtk_box_pack_start(GTK_BOX(vbox), a->vpaned, TRUE, TRUE, 0);
 
@@ -2350,6 +2450,13 @@ static void build_ui(App *a)
 
     gtk_container_add(GTK_CONTAINER(a->win), vbox);
     gtk_widget_show_all(a->win);
+
+    /* курсор ресайза над ручкой (окно появляется после show_all) */
+    if (gtk_widget_get_window(APP.grip)) {
+        GdkCursor *cur = gdk_cursor_new_from_name(gdk_display_get_default(), "ns-resize");
+        gdk_window_set_cursor(gtk_widget_get_window(APP.grip), cur);
+        g_object_unref(cur);
+    }
     tray_init();
 }
 
