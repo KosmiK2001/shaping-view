@@ -859,6 +859,9 @@ typedef struct {
     GtkWidget      *cards_box;
     GtkLabel       *info;
     GtkWidget      *graph;
+    GtkWidget      *vpaned;      /* вертикальный сплит: списки ↔ график  */
+    GtkWidget      *hp;          /* верхняя панель (дерево + карточки)   */
+    GtkWidget      *btn_expand;  /* «во всю высоту»                      */
 
     GThread        *worker;
     gint           worker_run;
@@ -1625,37 +1628,57 @@ static gboolean on_graph_draw(GtkWidget *w, cairo_t *cr, gpointer data)
         cairo_stroke(cr);
     }
 
-    /* стек: кумулятивные полосы по слотам кольца */
+    /* стек: кумулятивные полосы по слотам кольца (сначала только данные) */
     double *lo = g_new0(double, (gsize)(nstk ? nstk : 1) * HISTORY_LEN);
     double *hi = g_new0(double, (gsize)(nstk ? nstk : 1) * HISTORY_LEN);
     double *run = g_new0(double, HISTORY_LEN);
 
     for (guint kk = 0; kk < nstk; kk++) {
         TcClass *cl = g_ptr_array_index(ifc->classes, idx[kk]);
-        const Rgb *col = pal_color(kk);
         char *hk = g_strdup_printf("cls|%s|%s", dev_name, cl->classid);
         History *hc = hist_get(hk);
         g_free(hk);
-
         for (int s2 = 0; s2 < HISTORY_LEN; s2++) {
-            double v = hist_value_at(hc, s2);
-            double x = W - (HISTORY_LEN - 1 - s2) * step;
             lo[kk * HISTORY_LEN + s2] = run[s2];
-            run[s2] += v;
+            run[s2] += hist_value_at(hc, s2);
             hi[kk * HISTORY_LEN + s2] = run[s2];
+        }
+    }
 
-            double y = base_y - (run[s2] / scale) * main_h;
-            if (y < pad_t) y = pad_t;   /* клип при переполнении шкалы */
-            if (kk == 0) {
+    /* авто-зум: пик окна < 25% предела — растягиваем шкалу на всю высоту */
+    double wmax = 0;
+    for (int s2 = 0; s2 < HISTORY_LEN; s2++)
+        if (run[s2] > wmax) wmax = run[s2];
+    double zoom = 1.0;
+    if (scale > 0 && wmax > 0 && wmax < 0.25 * scale) {
+        double target = nice_ceil(wmax * 1.2);
+        if (target > 0 && target < scale) {
+            zoom = scale / target;
+            scale = target;
+        }
+    }
+
+    /* отрисовка полос по подготовленным кумулятивам */
+    for (guint kk = 0; kk < nstk; kk++) {
+        TcClass *cl = g_ptr_array_index(ifc->classes, idx[kk]);
+        const Rgb *col = pal_color(kk);
+
+        /* верхняя кромка суммарного стека (только у первой очереди) */
+        if (kk == 0) {
+            cairo_set_source_rgba(cr, 0.72, 0.77, 0.80, 0.55);
+            cairo_set_line_width(cr, 1.0);
+            for (int s2 = 0; s2 < HISTORY_LEN; s2++) {
+                double x = W - (HISTORY_LEN - 1 - s2) * step;
+                double y = base_y - (run[s2] / scale) * main_h;
+                if (y < pad_t) y = pad_t;
                 if (s2 == 0) cairo_move_to(cr, x, y);
                 else cairo_line_to(cr, x, y);
             }
+            cairo_stroke(cr);
         }
-        cairo_set_source_rgba(cr, col->r, col->g, col->b, 0.40);
-        cairo_set_line_width(cr, 1.0);
-        cairo_stroke(cr);
 
-        /* полоса: верхняя граница этой очереди вниз до границы предыдущей */
+        /* полоса очереди: от границы предыдущей до своей */
+        cairo_set_source_rgba(cr, col->r, col->g, col->b, 0.38);
         for (int s2 = 0; s2 < HISTORY_LEN; s2++) {
             double x = W - (HISTORY_LEN - 1 - s2) * step;
             double y_top = base_y - (hi[kk * HISTORY_LEN + s2] / scale) * main_h;
@@ -1669,7 +1692,6 @@ static gboolean on_graph_draw(GtkWidget *w, cairo_t *cr, gpointer data)
             cairo_line_to(cr, x, y_lo);
         }
         cairo_close_path(cr);
-        cairo_set_source_rgba(cr, col->r, col->g, col->b, 0.38);
         cairo_fill(cr);
 
         /* подпись classid внутри полосы */
@@ -1727,10 +1749,20 @@ static gboolean on_graph_draw(GtkWidget *w, cairo_t *cr, gpointer data)
         g_free(im);
     }
 
-    /* ---------- подписи: шкала · сейчас · дельта ---------- */
-    char *lbl1 = g_strdup_printf(
-        "<span foreground='#cfd8dc' size='small'>шкала: <b>%s</b> · %s</span>",
-        fmt_rate(scale), src ? src : "?");
+    /* ---------- подписи: шкала · коэффициент зума · сейчас · дельта ---------- */
+    char *lbl1;
+    if (zoom >= 1.05) {
+        char *zs = (zoom >= 10) ? g_strdup_printf("×%.0f", zoom)
+                                : g_strdup_printf("×%.1f", zoom);
+        lbl1 = g_strdup_printf(
+            "<span foreground='#cfd8dc' size='small'>шкала: <b>%s</b> · %s · <span foreground='#ffb300'>%s</span></span>",
+            fmt_rate(scale), src ? src : "?", zs);
+        g_free(zs);
+    } else {
+        lbl1 = g_strdup_printf(
+            "<span foreground='#cfd8dc' size='small'>шкала: <b>%s</b> · %s</span>",
+            fmt_rate(scale), src ? src : "?");
+    }
     char *lbl2 = g_strdup_printf(
         "<span foreground='#cfd8dc' size='small'>сейчас: <b>%s</b></span>", fmt_rate(dsum));
     char *dcol = (fabs(delta) > scale * 0.03) ? "#ffb300" : "#78909c";
@@ -1796,6 +1828,13 @@ static void on_interval_changed(GtkSpinButton *b, gpointer data)
 {
     App *a = data;
     g_atomic_int_set(&a->interval_ms, (gint)(gtk_spin_button_get_value(b) * 1000.0));
+}
+
+/* «Во всю высоту»: прячем верхнюю панель — график занимает всё окно */
+static void on_expand_toggled(GtkToggleButton *b, App *a)
+{
+    gboolean act = gtk_toggle_button_get_active(b);
+    gtk_widget_set_visible(a->hp, !act);
 }
 
 /* =========================== РАБОЧИЙ ПОТОК =========================== */
@@ -2228,6 +2267,12 @@ static void build_ui(App *a)
     g_signal_connect(a->spin, "value-changed", G_CALLBACK(on_interval_changed), a);
     gtk_header_bar_pack_start(GTK_HEADER_BAR(hb), a->spin);
 
+    a->btn_expand = gtk_toggle_button_new_with_label(_("Во всю высоту"));
+    gtk_widget_set_tooltip_text(a->btn_expand,
+                                _("Растянуть график: спрятать список очередей сверху"));
+    g_signal_connect(a->btn_expand, "toggled", G_CALLBACK(on_expand_toggled), a);
+    gtk_header_bar_pack_end(GTK_HEADER_BAR(hb), a->btn_expand);
+
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
     gtk_container_set_border_width(GTK_CONTAINER(vbox), 6);
 
@@ -2235,7 +2280,6 @@ static void build_ui(App *a)
     gtk_paned_pack1(GTK_PANED(hp), make_left(), TRUE, FALSE);
     gtk_paned_pack2(GTK_PANED(hp), make_right(), TRUE, FALSE);
     gtk_paned_set_position(GTK_PANED(hp), 340);
-    gtk_box_pack_start(GTK_BOX(vbox), hp, TRUE, TRUE, 0);
 
     GtkWidget *gframe = gtk_frame_new(_("История скорости (последние 60 отсчётов)"));
     gtk_container_set_border_width(GTK_CONTAINER(gframe), 2);
@@ -2243,7 +2287,14 @@ static void build_ui(App *a)
     gtk_widget_set_size_request(a->graph, -1, 150);
     g_signal_connect(a->graph, "draw", G_CALLBACK(on_graph_draw), a);
     gtk_container_add(GTK_CONTAINER(gframe), a->graph);
-    gtk_box_pack_start(GTK_BOX(vbox), gframe, FALSE, FALSE, 0);
+
+    /* вертикальный сплиттер: тянем вниз — график растёт за счёт списков сверху */
+    a->vpaned = gtk_paned_new(GTK_ORIENTATION_VERTICAL);
+    a->hp = hp;
+    gtk_paned_pack1(GTK_PANED(a->vpaned), hp, TRUE, TRUE);
+    gtk_paned_pack2(GTK_PANED(a->vpaned), gframe, TRUE, FALSE);
+    gtk_paned_set_position(GTK_PANED(a->vpaned), 620);
+    gtk_box_pack_start(GTK_BOX(vbox), a->vpaned, TRUE, TRUE, 0);
 
     a->status = GTK_LABEL(gtk_label_new(NULL));
     gtk_label_set_xalign(a->status, 0.0);
