@@ -1,4 +1,6 @@
 shaping-view
+shaping-view-debug
+shaping-view-san
 *.o
 *.mo
 core

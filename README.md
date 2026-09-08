@@ -45,14 +45,21 @@ GTK3-приложение (C11) для наблюдения за иерархи�
 
 ## Сборка и запуск
 
+Требования: GTK+ 3.16+, glib 2.40+, pkg-config.
+
 ```sh
-pkg-config --exists gtk+-3.0   # требования: GTK+ 3.16+, glib 2.40+
-make
-./shaping-view
+make           # финальная сборка: -O2 -march=native → strip -s → upx -9
+make run       # собрать и запустить
+make debug     # промежуточная разработка: -O0 -g3 (макросы+исходники в отладке),
+               # бинарник shaping-view-debug
+make sanitize  # debug + ASan/UBSan (ловим порчи памяти), shaping-view-san
+make clean
 ```
 
-`tc` и `ip` ищутся в `PATH` (`g_find_program_in_path`). Чтение состояния tc
-работает без root; права нужны только для изменения.
+Релизная сборка по умолчанию стрипается и сжимается upx (если upx не
+установлен — шаг пропускается). `tc` и `ip` ищутся в `PATH`
+(`g_find_program_in_path`). Чтение состояния tc работает без root; права
+нужны только для изменения.
 
 ## Имена классов (опционально)
 
