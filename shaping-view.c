@@ -34,9 +34,11 @@
 
 #ifdef ENABLE_NLS
 # include <libintl.h>
-# define _(s) dgettext("shaping-view", (s))
+# define _(s)  dgettext("shaping-view", (s))
+# define N_(s) (s)
 #else
-# define _(s) (s)
+# define _(s)  (s)
+# define N_(s) (s)
 #endif
 
 #define APP_ID          "ru.kosmik.shaping-view"
@@ -760,6 +762,15 @@ static Snapshot *mock_snapshot(void)
     return s;
 }
 
+/* ======================= ПАКИ САЙДБАРА ========================= */
+
+typedef enum { PACK_HW, PACK_VPNSRV, PACK_VPNCLI, PACK_N } PackKind;
+
+static const char *PACK_KEY[PACK_N]   = { "@hw", "@vpnserver", "@vpncli" };
+static const char *PACK_TITLE[PACK_N] = { N_("Реальное железо"),
+                                          N_("VPN-серверы"),
+                                          N_("VPN-клиенты") };
+
 /* =============================== UI =============================== */
 
 typedef struct {
@@ -797,6 +808,7 @@ typedef struct {
     GHashTable     *hist;        /* ключ сайдбара -> History*            */
     char           *sel_key;
     GKeyFile       *names;       /* [dev] classid = Имя                  */
+    GPtrArray      *grp[PACK_N]; /* [groups]: glob-паттерны паков        */
 } App;
 
 static App APP;
@@ -817,11 +829,68 @@ static void parse_key(const char *key, char **dev, char **ifb, gboolean *is_ing)
     }
 }
 
+/* --- классификация устройства по пакам --- */
+
+static gboolean match_pattern_list(const char *dev, GPtrArray *patterns)
+{
+    if (!patterns) return FALSE;
+    for (guint i = 0; i < patterns->len; i++)
+        if (g_pattern_match_simple(g_ptr_array_index(patterns, i), dev)) return TRUE;
+    return FALSE;
+}
+
+/* tun/tap-устройство? Ядро экспортирует /sys/class/net/<dev>/tun_flags */
+static gboolean iface_is_tunnel(const char *dev)
+{
+    char *p = g_build_filename("/sys/class/net", dev, "tun_flags", NULL);
+    gboolean r = g_file_test(p, G_FILE_TEST_EXISTS);
+    g_free(p);
+    return r;
+}
+
+/* порядок правил: конфиг [groups] → признак туннеля → эвристика имени → железо */
+static PackKind classify_iface(const TcIface *ifc)
+{
+    const char *dev = ifc->name;
+
+    if (match_pattern_list(dev, APP.grp[PACK_VPNSRV])) return PACK_VPNSRV;
+    if (match_pattern_list(dev, APP.grp[PACK_VPNCLI])) return PACK_VPNCLI;
+    if (match_pattern_list(dev, APP.grp[PACK_HW]))     return PACK_HW;
+
+    if (iface_is_tunnel(dev)) {
+        if (g_str_has_prefix(dev, "tap") ||
+            strstr(dev, "server") || strstr(dev, "srv"))
+            return PACK_VPNSRV;
+        return PACK_VPNCLI;
+    }
+    return PACK_HW;
+}
+
+/* агрегат пака: сумма rate_now всех его устройств (egress + ingress-пути) */
+static double rate_for_pack(Snapshot *s, PackKind pk)
+{
+    double r = 0;
+    for (guint i = 0; i < s->top->len; i++) {
+        TcIface *ifc = g_ptr_array_index(s->top, i);
+        if (classify_iface(ifc) == pk)
+            r += iface_classes_rate(ifc) + iface_paths_rate(ifc);
+    }
+    return r;
+}
+
 static double rate_for_key(Snapshot *s, const char *key)
 {
     char *dev = NULL, *ifb = NULL;
     gboolean is_ing = FALSE;
     double r = 0;
+
+    /* ключи паков — агрегат по участникам */
+    if (key && key[0] == '@') {
+        PackKind pk = PACK_HW;
+        if      (!strcmp(key, PACK_KEY[PACK_VPNSRV])) pk = PACK_VPNSRV;
+        else if (!strcmp(key, PACK_KEY[PACK_VPNCLI])) pk = PACK_VPNCLI;
+        return rate_for_pack(s, pk);
+    }
 
     parse_key(key, &dev, &ifb, &is_ing);
     TcIface *ifc = snapshot_find_iface(s, dev);
@@ -1087,6 +1156,22 @@ static void rebuild_cards(Snapshot *s)
 
 /* --- применение снапшота (GUI-поток) --- */
 
+/* обновить COL_RATE одной строки; для паков (@…) — агрегат, история не пишется */
+static void update_row_rate(App *a, Snapshot *s, GtkTreeIter *it)
+{
+    GtkTreeModel *m = GTK_TREE_MODEL(a->store);
+    char *k = NULL;
+    gtk_tree_model_get(m, it, COL_KEY, &k, -1);
+    if (k) {
+        double r = rate_for_key(s, k);
+        char *rt = fmt_rate(r);
+        gtk_tree_store_set(a->store, it, COL_RATE, rt, -1);
+        if (k[0] != '@') hist_push(k, r);
+        g_free(rt);
+    }
+    g_free(k);
+}
+
 static void apply_snapshot(App *a, Snapshot *s);
 
 static gboolean apply_idle(gpointer data)
@@ -1104,92 +1189,110 @@ static void apply_snapshot(App *a, Snapshot *s)
     snapshot_free(a->cur);
     a->cur = s;
 
-    /* --- 1. актуализация дерева --- */
+    /* --- 1. актуализация дерева: паки → устройства → направления --- */
     GHashTable *present = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
     gboolean created_any = FALSE;
 
+    GPtrArray *packs[PACK_N];
+    for (int pi = 0; pi < PACK_N; pi++) packs[pi] = g_ptr_array_new();
     for (guint i = 0; i < s->top->len; i++) {
         TcIface *ifc = g_ptr_array_index(s->top, i);
-        GtkTreeIter dev_it;
-        gboolean created = FALSE;
+        g_ptr_array_add(packs[classify_iface(ifc)], ifc);
+    }
 
-        upsert_row(ifc->name, ifc->name,
-                   ifc->is_ifb ? "<span foreground='#6a1b9a'>ifb</span>"
-                               : "<span foreground='#888888'>iface</span>",
-                   NULL, &dev_it, &created);
-        g_hash_table_add(present, g_strdup(ifc->name));
+    for (int pi = 0; pi < PACK_N; pi++) {
+        if (packs[pi]->len == 0) continue;      /* пустой пак не показываем */
+
+        GtkTreeIter pack_it;
+        gboolean created = FALSE;
+        upsert_row(PACK_KEY[pi], _(PACK_TITLE[pi]), "", NULL, &pack_it, &created);
+        g_hash_table_add(present, g_strdup(PACK_KEY[pi]));
         created_any |= created;
 
-        if (ifc->classes->len > 0 || ifc->has_htb) {
-            char *ck = g_strdup_printf("%s|egress", ifc->name);
-            GtkTreeIter ci;
-            upsert_row(ck, "Исходящий (egress)",
-                       "<span foreground='#2e7d32'>▲ egress</span>", &dev_it, &ci, &created);
-            g_hash_table_add(present, g_strdup(ck));
-            created_any |= created;
-            g_free(ck);
+        for (guint d = 0; d < packs[pi]->len; d++) {
+            TcIface *ifc = g_ptr_array_index(packs[pi], d);
+            GtkTreeIter dev_it;
+            gboolean created_d = FALSE;
+
+            upsert_row(ifc->name, ifc->name,
+                       ifc->is_ifb ? "<span foreground='#6a1b9a'>ifb</span>"
+                                   : "<span foreground='#888888'>iface</span>",
+                       &pack_it, &dev_it, &created_d);
+            g_hash_table_add(present, g_strdup(ifc->name));
+            created_any |= created_d;
+
+            if (ifc->classes->len > 0 || ifc->has_htb) {
+                char *ck = g_strdup_printf("%s|egress", ifc->name);
+                GtkTreeIter ci;
+                upsert_row(ck, "Исходящий (egress)",
+                           "<span foreground='#2e7d32'>▲ egress</span>", &dev_it, &ci, &created_d);
+                g_hash_table_add(present, g_strdup(ck));
+                created_any |= created_d;
+                g_free(ck);
+            }
+            for (guint k = 0; k < ifc->paths->len; k++) {
+                TcIngressPath *p = g_ptr_array_index(ifc->paths, k);
+                char *ck = g_strdup_printf("%s|ing|%s", ifc->name, p->ifb);
+                char *nm = ingress_child_label(p, ifc->paths->len);
+                GtkTreeIter ci;
+                upsert_row(ck, nm, "<span foreground='#1565c0'>▼ ingress</span>", &dev_it, &ci, &created_d);
+                g_free(nm);
+                g_hash_table_add(present, g_strdup(ck));
+                created_any |= created_d;
+                g_free(ck);
+            }
+            remove_stale(&dev_it, present);
         }
-        for (guint k = 0; k < ifc->paths->len; k++) {
-            TcIngressPath *p = g_ptr_array_index(ifc->paths, k);
-            char *ck = g_strdup_printf("%s|ing|%s", ifc->name, p->ifb);
-            char *nm = ingress_child_label(p, ifc->paths->len);
-            GtkTreeIter ci;
-            upsert_row(ck, nm, "<span foreground='#1565c0'>▼ ingress</span>", &dev_it, &ci, &created);
-            g_free(nm);
-            g_hash_table_add(present, g_strdup(ck));
-            created_any |= created;
-            g_free(ck);
-        }
-        remove_stale(&dev_it, present);
+        remove_stale(&pack_it, present);
+        g_ptr_array_unref(packs[pi]);
     }
     remove_stale(NULL, present);
     if (created_any)
         gtk_tree_view_expand_all(GTK_TREE_VIEW(a->tree));
 
-    /* --- 2. колонка скорости + история --- */
+    /* --- 2. колонка скорости + история (пак → устройство → направление) --- */
     GtkTreeModel *m = GTK_TREE_MODEL(a->store);
     GtkTreeIter it;
     gboolean ok = gtk_tree_model_get_iter_first(m, &it);
     while (ok) {
-        char *k = NULL;
-        gtk_tree_model_get(m, &it, COL_KEY, &k, -1);
-        if (k) {
-            double r = rate_for_key(s, k);
-            char *rt = fmt_rate(r);
-            gtk_tree_store_set(a->store, &it, COL_RATE, rt, -1);
-            hist_push(k, r);
-            g_free(rt);
-        }
-        g_free(k);
-        GtkTreeIter ch;
-        gboolean okc = gtk_tree_model_iter_children(m, &ch, &it);
-        while (okc) {
-            char *kc = NULL;
-            gtk_tree_model_get(m, &ch, COL_KEY, &kc, -1);
-            if (kc) {
-                double rc = rate_for_key(s, kc);
-                char *rtc = fmt_rate(rc);
-                gtk_tree_store_set(a->store, &ch, COL_RATE, rtc, -1);
-                hist_push(kc, rc);
-                g_free(rtc);
+        update_row_rate(a, s, &it);
+        GtkTreeIter dev_it;
+        gboolean okd = gtk_tree_model_iter_children(m, &dev_it, &it);
+        while (okd) {
+            update_row_rate(a, s, &dev_it);
+            GtkTreeIter ch;
+            gboolean okc = gtk_tree_model_iter_children(m, &ch, &dev_it);
+            while (okc) {
+                update_row_rate(a, s, &ch);
+                okc = gtk_tree_model_iter_next(m, &ch);
             }
-            g_free(kc);
-            okc = gtk_tree_model_iter_next(m, &ch);
+            okd = gtk_tree_model_iter_next(m, &dev_it);
         }
         ok = gtk_tree_model_iter_next(m, &it);
     }
 
     g_hash_table_unref(present);
 
-    /* --- 3. выбор по умолчанию --- */
+    /* --- 3. выбор по умолчанию: первое выбираемое устройство (не пак) --- */
     if (!a->sel_key && gtk_tree_model_get_iter_first(m, &it)) {
-        char *k = NULL;
-        gtk_tree_model_get(m, &it, COL_KEY, &k, -1);
-        if (k) {
+        GtkTreeIter found;
+        gboolean have = FALSE;
+        GtkTreeIter dev_it;
+        gboolean okd = gtk_tree_model_iter_children(m, &dev_it, &it);
+        while (okd && !have) {
+            char *kd = NULL;
+            gtk_tree_model_get(m, &dev_it, COL_KEY, &kd, -1);
+            if (kd && kd[0] != '@') { found = dev_it; have = TRUE; }
+            g_free(kd);
+            if (!have) okd = gtk_tree_model_iter_next(m, &dev_it);
+        }
+        if (have) {
+            char *k = NULL;
+            gtk_tree_model_get(m, &found, COL_KEY, &k, -1);
             a->sel_key = g_strdup(k);
             g_free(k);
             gtk_tree_selection_select_iter(
-                gtk_tree_view_get_selection(GTK_TREE_VIEW(a->tree)), &it);
+                gtk_tree_view_get_selection(GTK_TREE_VIEW(a->tree)), &found);
         }
     }
 
@@ -1351,6 +1454,7 @@ static void on_sel_changed(GtkTreeSelection *sel, gpointer data)
     char *k = NULL;
     if (gtk_tree_selection_get_selected(sel, NULL, &it))
         gtk_tree_model_get(GTK_TREE_MODEL(APP.store), &it, COL_KEY, &k, -1);
+    if (k && k[0] == '@') { g_free(k); k = NULL; }   /* паки — не выбираются */
     g_free(APP.sel_key);
     APP.sel_key = k;
     rebuild_cards(APP.cur);
@@ -1394,6 +1498,168 @@ static gpointer worker_loop(gpointer data)
     return NULL;
 }
 
+/* ============ STRIPED-РЕНДЕРЕР: заголовки паков (аналог conky striped_hr) ============ */
+
+#define TC_TYPE_STRIPED (tc_striped_get_type())
+typedef struct _TcStriped TcStriped;
+typedef struct _TcStripedClass TcStripedClass;
+
+struct _TcStriped { GtkCellRenderer parent; char *label; };
+struct _TcStripedClass { GtkCellRendererClass parent_class; };
+
+enum { SP_PROP_0, SP_PROP_LABEL, SP_PROP_N };
+
+G_DEFINE_TYPE(TcStriped, tc_striped, GTK_TYPE_CELL_RENDERER)
+
+static GtkCellRenderer *tc_striped_new(void)
+{
+    return GTK_CELL_RENDERER(g_object_new(TC_TYPE_STRIPED, NULL));
+}
+
+static void tc_striped_get_property(GObject *o, guint id, GValue *v, GParamSpec *ps)
+{
+    TcStriped *r = (TcStriped *) o;
+    if (id == SP_PROP_LABEL) g_value_set_string(v, r->label ? r->label : "");
+    else G_OBJECT_WARN_INVALID_PROPERTY_ID(o, id, ps);
+}
+
+static void tc_striped_set_property(GObject *o, guint id, const GValue *v, GParamSpec *ps)
+{
+    TcStriped *r = (TcStriped *) o;
+    if (id == SP_PROP_LABEL) {
+        g_free(r->label);
+        r->label = g_value_dup_string(v);
+    } else G_OBJECT_WARN_INVALID_PROPERTY_ID(o, id, ps);
+}
+
+static void tc_striped_finalize(GObject *o)
+{
+    TcStriped *r = (TcStriped *) o;
+    g_free(r->label);
+    G_OBJECT_CLASS(tc_striped_parent_class)->finalize(o);
+}
+
+static void tc_striped_get_size(GtkCellRenderer *cell, GtkWidget *widget,
+                                const GdkRectangle *cell_area,
+                                gint *xoff, gint *yoff, gint *width, gint *height)
+{
+    (void) cell_area; (void) xoff; (void) yoff;
+    TcStriped *r = (TcStriped *) cell;
+    PangoLayout *pl = gtk_widget_create_pango_layout(widget, NULL);
+    char *mk = g_strdup_printf("<span size='small' weight='bold'>%s</span>",
+                               r->label ? r->label : "");
+    pango_layout_set_markup(pl, mk, -1);
+    int tw = 0, th = 0;
+    pango_layout_get_pixel_size(pl, &tw, &th);
+    if (width)  *width  = tw + 14;
+    if (height) *height = (th > 14 ? th : 14) + 6;
+    g_object_unref(pl);
+    g_free(mk);
+}
+
+static void tc_striped_render(GtkCellRenderer *cell, cairo_t *cr, GtkWidget *widget,
+                              const GdkRectangle *bg, const GdkRectangle *cell_area,
+                              GtkCellRendererState flags)
+{
+    (void) bg; (void) flags; (void) widget;
+    TcStriped *r = (TcStriped *) cell;
+
+    const double band_h = 5.0;
+    double ty = cell_area->y + (cell_area->height - band_h) / 2.0;
+
+    /* заголовок пака слева */
+    PangoLayout *pl = gtk_widget_create_pango_layout(widget, NULL);
+    char *mk = g_strdup_printf("<span size='small' weight='bold' foreground='#cfd8dc'>%s</span>",
+                               r->label ? r->label : "");
+    pango_layout_set_markup(pl, mk, -1);
+    int tw = 0, th = 0;
+    pango_layout_get_pixel_size(pl, &tw, &th);
+    cairo_move_to(cr, cell_area->x + 2, cell_area->y + (cell_area->height - th) / 2.0);
+    pango_cairo_show_layout(cr, pl);
+    g_object_unref(pl);
+    g_free(mk);
+
+    /* диагональная штриховка от конца заголовка до правого края строки */
+    double sx = cell_area->x + tw + 10;
+    double ex = cell_area->x + cell_area->width - 2;
+    if (ex - sx > 4) {
+        cairo_save(cr);
+        cairo_rectangle(cr, sx, ty, ex - sx, band_h);
+        cairo_clip(cr);
+        cairo_set_line_width(cr, 1.4);
+        for (double x = sx - band_h; x < ex + band_h; x += 4.0) {
+            cairo_set_source_rgba(cr, 0.565, 0.643, 0.686, 0.50);  /* #90a4ae */
+            cairo_move_to(cr, x, ty + band_h);
+            cairo_line_to(cr, x + band_h, ty);
+            cairo_stroke(cr);
+            cairo_set_source_rgba(cr, 0.216, 0.278, 0.310, 0.50);  /* #37474f */
+            cairo_move_to(cr, x + 2, ty + band_h);
+            cairo_line_to(cr, x + 2 + band_h, ty);
+            cairo_stroke(cr);
+        }
+        cairo_restore(cr);
+    }
+}
+
+static void tc_striped_init(TcStriped *r)
+{
+    (void) r;
+}
+
+static void tc_striped_class_init(TcStripedClass *klass)
+{
+    GObjectClass *goc = G_OBJECT_CLASS(klass);
+    GtkCellRendererClass *crc = GTK_CELL_RENDERER_CLASS(klass);
+    goc->get_property = tc_striped_get_property;
+    goc->set_property = tc_striped_set_property;
+    goc->finalize     = tc_striped_finalize;
+    crc->get_size     = tc_striped_get_size;
+    crc->render       = tc_striped_render;
+    g_object_class_install_property(goc, SP_PROP_LABEL,
+        g_param_spec_string("label", "Label", "Pack title", "",
+                            G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+}
+
+/* видимость рендереров колонки имени: text — для устройств/узлов, striped — для паков */
+static void pack_vis_func(GtkTreeViewColumn *col, GtkCellRenderer *cell,
+                          GtkTreeModel *m, GtkTreeIter *it, gpointer data)
+{
+    (void) col;
+    gboolean want = GPOINTER_TO_INT(data);
+    char *k = NULL;
+    gtk_tree_model_get(m, it, COL_KEY, &k, -1);
+    gboolean is_pack = (k && k[0] == '@');
+    g_free(k);
+    g_object_set(cell, "visible", is_pack == want, NULL);
+}
+
+static void striped_data_func(GtkTreeViewColumn *col, GtkCellRenderer *cell,
+                              GtkTreeModel *m, GtkTreeIter *it, gpointer data)
+{
+    (void) col; (void) data;
+    char *k = NULL, *nm = NULL;
+    gtk_tree_model_get(m, it, COL_KEY, &k, COL_NAME, &nm, -1);
+    gboolean is_pack = (k && k[0] == '@');
+    g_object_set(cell, "visible", is_pack, "label", nm ? nm : "", NULL);
+    g_free(k); g_free(nm);
+}
+
+/* паки — только разделители: выделение запрещено */
+static gboolean sel_ok(GtkTreeSelection *sel, GtkTreeModel *m, GtkTreePath *path,
+                       gboolean cur, gpointer data)
+{
+    (void) sel; (void) cur; (void) data;
+    GtkTreeIter it;
+    char *k = NULL;
+    gboolean allow = TRUE;
+    if (gtk_tree_model_get_iter(m, &it, path)) {
+        gtk_tree_model_get(m, &it, COL_KEY, &k, -1);
+        allow = !(k && k[0] == '@');
+        g_free(k);
+    }
+    return allow;
+}
+
 /* =========================== СБОРКА UI =========================== */
 
 static GtkWidget *make_left(void)
@@ -1410,11 +1676,22 @@ static GtkWidget *make_left(void)
     GtkCellRenderer *r;
     GtkTreeViewColumn *c;
 
+    /* колонка имени: обычный текст + striped-рендерер для строк паков (@…) */
+    c = gtk_tree_view_column_new();
+    gtk_tree_view_column_set_title(c, _("Устройство / узел"));
+    gtk_tree_view_column_set_expand(c, TRUE);
+
     r = gtk_cell_renderer_text_new();
     g_object_set(r, "ellipsize", PANGO_ELLIPSIZE_END, NULL);
-    c = gtk_tree_view_column_new_with_attributes(_("Устройство / узел"), r,
-                                                 "text", COL_NAME, NULL);
-    gtk_tree_view_column_set_expand(c, TRUE);
+    gtk_tree_view_column_pack_start(c, r, TRUE);
+    gtk_tree_view_column_set_attributes(c, r, "text", COL_NAME, NULL);
+    gtk_tree_view_column_set_cell_data_func(c, r, pack_vis_func,
+                                            GINT_TO_POINTER(FALSE), NULL);
+
+    GtkCellRenderer *sr = tc_striped_new();
+    gtk_tree_view_column_pack_start(c, sr, TRUE);
+    gtk_tree_view_column_set_cell_data_func(c, sr, striped_data_func, NULL, NULL);
+
     gtk_tree_view_append_column(GTK_TREE_VIEW(APP.tree), c);
 
     r = gtk_cell_renderer_text_new();
@@ -1430,6 +1707,7 @@ static GtkWidget *make_left(void)
 
     GtkTreeSelection *sel = gtk_tree_view_get_selection(GTK_TREE_VIEW(APP.tree));
     gtk_tree_selection_set_mode(sel, GTK_SELECTION_BROWSE);
+    gtk_tree_selection_set_select_function(sel, sel_ok, NULL, NULL);
     g_signal_connect(sel, "changed", G_CALLBACK(on_sel_changed), NULL);
 
     gtk_container_add(GTK_CONTAINER(sc), APP.tree);
@@ -1506,6 +1784,22 @@ static void build_ui(App *a)
 
 /* ========================= ЖИЗНЕННЫЙ ЦИКЛ ========================= */
 
+/* glob-паттерны паков из секции [groups]: hardware / vpn-server / vpn-client */
+static void load_groups(App *a)
+{
+    if (!a->names) return;
+    const char *keys[PACK_N] = { "hardware", "vpn-server", "vpn-client" };
+    for (int i = 0; i < PACK_N; i++) {
+        char *v = g_key_file_get_string(a->names, "groups", keys[i], NULL);
+        if (!v) continue;
+        char **pats = g_strsplit_set(v, " \t,", -1);
+        for (int j = 0; pats[j]; j++)
+            if (pats[j][0]) g_ptr_array_add(a->grp[i], g_strdup(pats[j]));
+        g_strfreev(pats);
+        g_free(v);
+    }
+}
+
 static void load_names(App *a)
 {
     char *p = g_build_filename(g_get_user_config_dir(), "shaping-view",
@@ -1514,6 +1808,8 @@ static void load_names(App *a)
     if (!g_key_file_load_from_file(a->names, p, G_KEY_FILE_NONE, NULL)) {
         g_key_file_free(a->names);
         a->names = NULL;
+    } else {
+        load_groups(a);
     }
     g_free(p);
 }
@@ -1542,6 +1838,8 @@ static void on_shutdown(GtkApplication *application, gpointer data)
     snapshot_free(a->cur); a->cur = NULL;
     if (a->cards) { g_hash_table_unref(a->cards); a->cards = NULL; }
     if (a->hist)  { g_hash_table_unref(a->hist);  a->hist  = NULL; }
+    for (int i = 0; i < PACK_N; i++)
+        if (a->grp[i]) { g_ptr_array_unref(a->grp[i]); a->grp[i] = NULL; }
     g_free(a->sel_key); a->sel_key = NULL;
     g_free(a->cards_dev); a->cards_dev = NULL;
     g_free(a->tc_path); a->tc_path = NULL;
@@ -1562,6 +1860,8 @@ int main(int argc, char **argv)
     APP.interval_ms = DEF_INTERVAL_MS;
     APP.cards = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
     APP.hist  = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+    for (int i = 0; i < PACK_N; i++)
+        APP.grp[i] = g_ptr_array_new_with_free_func(g_free);
 
     APP.app = gtk_application_new(APP_ID, G_APPLICATION_NON_UNIQUE);
     g_signal_connect(APP.app, "activate", G_CALLBACK(on_activate), &APP);
