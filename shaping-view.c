@@ -842,7 +842,10 @@ static const char *PACK_TITLE[PACK_N] = { N_("Реальное железо"),
 typedef struct {
     GtkLabel       *rate;
     GtkProgressBar *bar;
-    GtkLabel       *stats;
+    GtkLabel       *pct;
+    GtkLabel       *st_drops;
+    GtkLabel       *st_over;
+    GtkLabel       *st_back;
 } CardRefs;
 
 typedef struct { double v[HISTORY_LEN]; int len; double rmax; } History;
@@ -1194,28 +1197,49 @@ static GtkWidget *make_card(const char *dev, TcClass *cl, guint cidx)
     gtk_frame_set_label_widget(GTK_FRAME(frame), lh);
 
     GtkWidget *grid = gtk_grid_new();
-    gtk_grid_set_row_spacing(GTK_GRID(grid), 3);
-    gtk_grid_set_column_spacing(GTK_GRID(grid), 10);
+    gtk_grid_set_row_spacing(GTK_GRID(grid), 5);
+    gtk_grid_set_column_spacing(GTK_GRID(grid), 8);
     gtk_container_set_border_width(GTK_CONTAINER(grid), 6);
 
     CardRefs *cr = g_new0(CardRefs, 1);
 
+    /* строка 1: битрейт · полоса · процент — табличные столбцы одной ширины
+       у всех карточек (в т.ч. с отступом глубины), вид таблицы */
     char *rt = fmt_rate(cl->rate_now);
     char *ct = cl->ceil_bps > 0 ? fmt_rate(cl->ceil_bps) : g_strdup("—");
-    char *m3 = g_strdup_printf("<span size='large'><b>%s</b></span> <span foreground='#78909c'>/ %s</span>", rt, ct);
+    char *m3 = g_strdup_printf("<b>%s</b> <span foreground='#78909c'>/ %s</span>", rt, ct);
     cr->rate = GTK_LABEL(gtk_label_new(NULL));
     gtk_label_set_markup(cr->rate, m3);
     gtk_label_set_xalign(cr->rate, 0.0);
+    gtk_label_set_width_chars(cr->rate, 19);
+    gtk_label_set_max_width_chars(cr->rate, 19);
+    gtk_label_set_ellipsize(cr->rate, PANGO_ELLIPSIZE_END);
     gtk_grid_attach(GTK_GRID(grid), GTK_WIDGET(cr->rate), 0, 0, 1, 1);
 
     cr->bar = GTK_PROGRESS_BAR(gtk_progress_bar_new());
-    gtk_progress_bar_set_show_text(cr->bar, TRUE);
-    gtk_widget_set_hexpand(GTK_WIDGET(cr->bar), TRUE);
-    gtk_grid_attach(GTK_GRID(grid), GTK_WIDGET(cr->bar), 0, 1, 2, 1);
+    gtk_progress_bar_set_show_text(cr->bar, FALSE);
+    gtk_widget_set_size_request(GTK_WIDGET(cr->bar), 240, -1);
+    gtk_grid_attach(GTK_GRID(grid), GTK_WIDGET(cr->bar), 1, 0, 1, 1);
 
-    cr->stats = GTK_LABEL(gtk_label_new(NULL));
-    gtk_label_set_xalign(cr->stats, 0.0);
-    gtk_grid_attach(GTK_GRID(grid), GTK_WIDGET(cr->stats), 0, 2, 2, 1);
+    cr->pct = GTK_LABEL(gtk_label_new("0%"));
+    gtk_label_set_xalign(cr->pct, 1.0);
+    gtk_label_set_width_chars(cr->pct, 5);
+    gtk_style_context_add_class(gtk_widget_get_style_context(GTK_WIDGET(cr->pct)), "mono");
+    gtk_grid_attach(GTK_GRID(grid), GTK_WIDGET(cr->pct), 2, 0, 1, 1);
+
+    /* строка 2: чипы статистики — чёрный скруглённый фон, текст белый,
+       числа: дропы красным, оверлимиты оранжевым, бэклог синим */
+    GtkWidget *chips = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    cr->st_drops = GTK_LABEL(gtk_label_new(NULL));
+    cr->st_over  = GTK_LABEL(gtk_label_new(NULL));
+    cr->st_back  = GTK_LABEL(gtk_label_new(NULL));
+    gtk_style_context_add_class(gtk_widget_get_style_context(GTK_WIDGET(cr->st_drops)), "chip");
+    gtk_style_context_add_class(gtk_widget_get_style_context(GTK_WIDGET(cr->st_over)), "chip");
+    gtk_style_context_add_class(gtk_widget_get_style_context(GTK_WIDGET(cr->st_back)), "chip");
+    gtk_box_pack_start(GTK_BOX(chips), GTK_WIDGET(cr->st_drops), FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(chips), GTK_WIDGET(cr->st_over), FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(chips), GTK_WIDGET(cr->st_back), FALSE, FALSE, 0);
+    gtk_grid_attach(GTK_GRID(grid), chips, 0, 1, 3, 1);
 
     gtk_container_add(GTK_CONTAINER(frame), grid);
     g_hash_table_insert(APP.cards, g_strdup(cl->classid), cr);
@@ -1248,24 +1272,30 @@ static void update_cards(Snapshot *s)
         if (frac < 0) frac = 0;
         if (frac > 1) frac = 1;
         gtk_progress_bar_set_fraction(cr->bar, frac);
-        char *pt = g_strdup_printf("%.0f%%", frac * 100.0);
-        gtk_progress_bar_set_text(cr->bar, pt);
-        g_free(pt);
+        char *pct = g_strdup_printf("%.0f%%", frac * 100.0);
+        gtk_label_set_text(cr->pct, pct);
+        g_free(pct);
 
         char *rt = fmt_rate(cl->rate_now);
         char *ct = cl->ceil_bps > 0 ? fmt_rate(cl->ceil_bps) : g_strdup("—");
-        char *m = g_strdup_printf("<span size='large'><b>%s</b></span> <span foreground='#78909c'>/ %s</span>", rt, ct);
+        char *m = g_strdup_printf("<b>%s</b> <span foreground='#78909c'>/ %s</span>", rt, ct);
         gtk_label_set_markup(cr->rate, m);
         g_free(rt); g_free(ct); g_free(m);
 
         const char *backlog = backlog_for_class(ifc, cl);
+        if (!backlog) backlog = cl->backlog ? cl->backlog : "—";
+        char *m1 = g_strdup_printf(
+            "<span foreground='#ffffff'>Дропы:</span> <span foreground='#ff5252'>%llu</span>",
+            (unsigned long long) cl->dropped);
         char *m2 = g_strdup_printf(
-            "<small><span foreground='#78909c'>Дропы: %llu · Оверлимиты: %llu · Бэклог: %s</span></small>",
-            (unsigned long long) cl->dropped,
-            (unsigned long long) cl->overlimits,
-            backlog ? backlog : cl->backlog ? cl->backlog : "—");
-        gtk_label_set_markup(cr->stats, m2);
-        g_free(m2);
+            "<span foreground='#ffffff'>Оверлимиты:</span> <span foreground='#ffb74d'>%llu</span>",
+            (unsigned long long) cl->overlimits);
+        char *m3 = g_strdup_printf(
+            "<span foreground='#ffffff'>Бэклог:</span> <span foreground='#4fc3f7'>%s</span>", backlog);
+        gtk_label_set_markup(cr->st_drops, m1);
+        gtk_label_set_markup(cr->st_over, m2);
+        gtk_label_set_markup(cr->st_back, m3);
+        g_free(m1); g_free(m2); g_free(m3);
     }
 }
 
@@ -1606,7 +1636,8 @@ static gboolean on_graph_draw(GtkWidget *w, cairo_t *cr, gpointer data)
     double scale = scale_for_node(APP.cur, key, &src);
     if (scale <= 0) scale = (h && h->rmax > 0) ? h->rmax : 1e6;
 
-    gboolean has_ing = (!is_ing && ifc && ifc->paths->len > 0);
+    gboolean is_egr = (key && strstr(key, "|egress"));
+    gboolean has_ing = (!is_ing && !is_egr && ifc && ifc->paths->len > 0);
     double pad_t = 20, pad_b = 4, gap = 3;
     double main_h, ing_h;
     if (has_ing) {
@@ -2172,6 +2203,19 @@ static void tray_update_status(Snapshot *s)
 
 /* =========================== СБОРКА UI =========================== */
 
+/* CSS: чёрный скруглённый фон чипов статистики в карточках */
+static void load_css(void)
+{
+    GtkCssProvider *prov = gtk_css_provider_new();
+    gtk_css_provider_load_from_data(prov,
+        ".chip { background-color: rgba(0,0,0,0.55); border-radius: 7px; padding: 2px 9px; }\n"
+        ".mono { font-family: monospace; }\n",
+        -1, NULL);
+    gtk_style_context_add_provider_for_screen(gdk_screen_get_default(),
+        GTK_STYLE_PROVIDER(prov), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+    g_object_unref(prov);
+}
+
 static GtkWidget *make_left(void)
 {
     GtkWidget *sc = gtk_scrolled_window_new(NULL, NULL);
@@ -2245,6 +2289,7 @@ static GtkWidget *make_right(void)
 
 static void build_ui(App *a)
 {
+    load_css();
     a->win = gtk_application_window_new(a->app);
     gtk_window_set_default_size(GTK_WINDOW(a->win), 1280, 860);
 
