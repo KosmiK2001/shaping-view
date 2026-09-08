@@ -1201,36 +1201,29 @@ static GtkWidget *make_card(const char *dev, TcClass *cl, guint cidx)
     gtk_box_pack_end(GTK_BOX(lh), l_tag, FALSE, FALSE, 0);
     gtk_frame_set_label_widget(GTK_FRAME(frame), lh);
 
-    GtkWidget *grid = gtk_grid_new();
-    gtk_grid_set_row_spacing(GTK_GRID(grid), 5);
-    gtk_grid_set_column_spacing(GTK_GRID(grid), 8);
-    gtk_container_set_border_width(GTK_CONTAINER(grid), 6);
-
     CardRefs *cr = g_new0(CardRefs, 1);
 
-    /* строка 1: битрейт · полоса · процент — табличные столбцы одной ширины
-       у всех карточек (в т.ч. с отступом глубины), вид таблицы */
+    /* ряд: битрейт · полоса (вся оставшаяся ширина) · процент (top-right, фикс. ширина) */
+    GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     char *rt = fmt_rate(cl->rate_now);
     char *ct = cl->ceil_bps > 0 ? fmt_rate(cl->ceil_bps) : g_strdup("—");
     char *m3 = g_strdup_printf("<b>%s</b> <span foreground='#78909c'>/ %s</span>", rt, ct);
     cr->rate = GTK_LABEL(gtk_label_new(NULL));
     gtk_label_set_markup(cr->rate, m3);
     gtk_label_set_xalign(cr->rate, 0.0);
-    gtk_label_set_width_chars(cr->rate, 19);
-    gtk_label_set_max_width_chars(cr->rate, 19);
     gtk_label_set_ellipsize(cr->rate, PANGO_ELLIPSIZE_END);
-    gtk_grid_attach(GTK_GRID(grid), GTK_WIDGET(cr->rate), 0, 0, 1, 1);
+    gtk_box_pack_start(GTK_BOX(row), GTK_WIDGET(cr->rate), FALSE, FALSE, 0);
 
     cr->bar = GTK_PROGRESS_BAR(gtk_progress_bar_new());
     gtk_progress_bar_set_show_text(cr->bar, FALSE);
-    gtk_widget_set_size_request(GTK_WIDGET(cr->bar), 240, -1);
-    gtk_grid_attach(GTK_GRID(grid), GTK_WIDGET(cr->bar), 1, 0, 1, 1);
+    gtk_widget_set_size_request(GTK_WIDGET(cr->bar), 120, -1);   /* не схлопнется */
+    gtk_box_pack_start(GTK_BOX(row), GTK_WIDGET(cr->bar), TRUE, TRUE, 0);
 
     cr->pct = GTK_LABEL(gtk_label_new("0%"));
     gtk_label_set_xalign(cr->pct, 1.0);
-    gtk_label_set_width_chars(cr->pct, 5);
+    gtk_label_set_width_chars(cr->pct, 5);                       /* макс "100%" */
     gtk_style_context_add_class(gtk_widget_get_style_context(GTK_WIDGET(cr->pct)), "mono");
-    gtk_grid_attach(GTK_GRID(grid), GTK_WIDGET(cr->pct), 2, 0, 1, 1);
+    gtk_box_pack_end(GTK_BOX(row), GTK_WIDGET(cr->pct), FALSE, FALSE, 0);
 
     /* строка 2: чипы статистики — чёрный скруглённый фон, текст белый,
        числа: дропы красным, оверлимиты оранжевым, бэклог синим */
@@ -1244,9 +1237,13 @@ static GtkWidget *make_card(const char *dev, TcClass *cl, guint cidx)
     gtk_box_pack_start(GTK_BOX(chips), GTK_WIDGET(cr->st_drops), FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(chips), GTK_WIDGET(cr->st_over), FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(chips), GTK_WIDGET(cr->st_back), FALSE, FALSE, 0);
-    gtk_grid_attach(GTK_GRID(grid), chips, 0, 1, 3, 1);
 
-    gtk_container_add(GTK_CONTAINER(frame), grid);
+    GtkWidget *body = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
+    gtk_container_set_border_width(GTK_CONTAINER(body), 6);
+    gtk_box_pack_start(GTK_BOX(body), row, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(body), chips, FALSE, FALSE, 0);
+
+    gtk_container_add(GTK_CONTAINER(frame), body);
     g_hash_table_insert(APP.cards, g_strdup(cl->classid), cr);
 
     g_free(m1); g_free(m2); g_free(m3); g_free(rt); g_free(ct); g_free(tag); g_free(nm);
