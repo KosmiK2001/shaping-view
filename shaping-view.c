@@ -48,6 +48,8 @@
 #define HISTORY_LEN     60
 #define DEF_INTERVAL_MS 1000
 #define CARD_INDENT_PX  20
+#define CARD_RATE_W     230   /* колонка битрейта: "999,9 Мбит/с / 999,9 Мбит/с" */
+#define CARD_PCT_W      46    /* колонка процентов: максимум "100%"             */
 
 /* ============================ УТИЛИТЫ ============================ */
 
@@ -882,6 +884,7 @@ typedef struct {
     GHashTable     *cards;       /* classid -> CardRefs*                 */
     char           *cards_dev;   /* устройство, чьи карточки показаны    */
     guint          cards_count;
+    guint          cards_max_depth;
     GHashTable     *hist;        /* ключ сайдбара -> History*            */
     char           *sel_key;
     GKeyFile       *names;       /* [dev] classid = Имя                  */
@@ -1212,16 +1215,17 @@ static GtkWidget *make_card(const char *dev, TcClass *cl, guint cidx)
     gtk_label_set_markup(cr->rate, m3);
     gtk_label_set_xalign(cr->rate, 0.0);
     gtk_label_set_ellipsize(cr->rate, PANGO_ELLIPSIZE_END);
+    gtk_widget_set_size_request(GTK_WIDGET(cr->rate), CARD_RATE_W, -1);
     gtk_box_pack_start(GTK_BOX(row), GTK_WIDGET(cr->rate), FALSE, FALSE, 0);
 
     cr->bar = GTK_PROGRESS_BAR(gtk_progress_bar_new());
     gtk_progress_bar_set_show_text(cr->bar, FALSE);
-    gtk_widget_set_size_request(GTK_WIDGET(cr->bar), 120, -1);   /* не схлопнется */
+    gtk_widget_set_size_request(GTK_WIDGET(cr->bar), 240, -1);   /* ширину задаёт cards_apply_bar_width */
     gtk_box_pack_start(GTK_BOX(row), GTK_WIDGET(cr->bar), TRUE, TRUE, 0);
 
     cr->pct = GTK_LABEL(gtk_label_new("0%"));
     gtk_label_set_xalign(cr->pct, 1.0);
-    gtk_label_set_width_chars(cr->pct, 5);                       /* макс "100%" */
+    gtk_widget_set_size_request(GTK_WIDGET(cr->pct), CARD_PCT_W, -1);  /* макс "100%" */
     gtk_style_context_add_class(gtk_widget_get_style_context(GTK_WIDGET(cr->pct)), "mono");
     gtk_box_pack_end(GTK_BOX(row), GTK_WIDGET(cr->pct), FALSE, FALSE, 0);
 
@@ -1301,6 +1305,29 @@ static void update_cards(Snapshot *s)
     }
 }
 
+/* одинаковая длина полос: пересчитывается ТОЛЬКО при ресайзе окна/панели
+ * и при пересборке карточек — не зависит от длины строк битрейта */
+static void cards_apply_bar_width(gint box_w)
+{
+    gint w = box_w - 12                                        /* рамки карточек */
+             - CARD_RATE_W - CARD_PCT_W - 16                   /* колонки + спейсинги */
+             - CARD_INDENT_PX * (gint)(APP.cards_max_depth > 4 ? 4 : APP.cards_max_depth);
+    w = CLAMP(w, 100, 800);
+    GHashTableIter it;
+    gpointer k, v;
+    g_hash_table_iter_init(&it, APP.cards);
+    while (g_hash_table_iter_next(&it, &k, &v)) {
+        CardRefs *cr = v;
+        gtk_widget_set_size_request(GTK_WIDGET(cr->bar), w, -1);
+    }
+}
+
+static void cards_resize_cb(GtkWidget *w, GdkRectangle *rect, gpointer data)
+{
+    (void) w; (void) data;
+    cards_apply_bar_width(rect->width);
+}
+
 static void rebuild_cards(Snapshot *s)
 {
     cards_clear();
@@ -1328,13 +1355,17 @@ static void rebuild_cards(Snapshot *s)
     gtk_label_set_markup(APP.info, info);
     g_free(sum); g_free(info);
 
+    guint maxd = 0;
     for (guint i = 0; i < ifc->classes->len; i++) {
         TcClass *cl = g_ptr_array_index(ifc->classes, i);
         GtkWidget *card = make_card(dn, cl, i);
+        if (cl->depth > maxd) maxd = cl->depth;
         gtk_box_pack_start(GTK_BOX(APP.cards_box), card, FALSE, FALSE, 0);
     }
     APP.cards_dev = g_strdup(dn);
     APP.cards_count = ifc->classes->len;
+    APP.cards_max_depth = maxd;
+    cards_apply_bar_width(gtk_widget_get_allocated_width(APP.cards_box));
 
     update_cards(s);
     gtk_widget_show_all(APP.cards_box);
@@ -2361,6 +2392,7 @@ static GtkWidget *make_right(void)
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sc),
                                    GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
     APP.cards_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    g_signal_connect(APP.cards_box, "size-allocate", G_CALLBACK(cards_resize_cb), NULL);
     gtk_container_add(GTK_CONTAINER(sc), APP.cards_box);
     gtk_box_pack_start(GTK_BOX(v), sc, TRUE, TRUE, 0);
     return v;
