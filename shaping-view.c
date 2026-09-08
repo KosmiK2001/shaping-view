@@ -2208,7 +2208,7 @@ static void load_css(void)
 {
     GtkCssProvider *prov = gtk_css_provider_new();
     gtk_css_provider_load_from_data(prov,
-        ".chip { background-color: rgba(0,0,0,0.55); border-radius: 7px; padding: 2px 9px; }\n"
+        ".chip { background-color: rgb(10,10,12); border-radius: 7px; padding: 2px 9px; }\n"
         ".mono { font-family: monospace; }\n",
         -1, NULL);
     gtk_style_context_add_provider_for_screen(gdk_screen_get_default(),
