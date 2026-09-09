@@ -287,11 +287,15 @@ static TcIface *snapshot_find_iface(Snapshot *s, const char *dev)
     return NULL;
 }
 
+/* Σ скоростей классов устройства БЕЗ корневого (1:1): корень уже = Σ детей,
+   включать его в сумму — задвоение (отсюда и «167-180 Мбит» на 100-мегабитном wan0) */
 static double iface_classes_rate(const TcIface *i)
 {
     double sum = 0;
-    for (guint k = 0; i && k < i->classes->len; k++)
-        sum += ((TcClass *) i->classes->pdata[k])->rate_now;
+    for (guint k = 0; i && k < i->classes->len; k++) {
+        TcClass *cl = g_ptr_array_index(i->classes, k);
+        if (cl->parent) sum += cl->rate_now;
+    }
     return sum;
 }
 
@@ -974,7 +978,7 @@ static double rate_for_pack(Snapshot *s, PackKind pk)
     for (guint i = 0; i < s->top->len; i++) {
         TcIface *ifc = g_ptr_array_index(s->top, i);
         if (classify_iface(ifc) == pk)
-            r += iface_classes_rate(ifc) + iface_paths_rate(ifc);
+            r += iface_classes_rate(ifc);
     }
     return r;
 }
@@ -1062,8 +1066,10 @@ static double rate_for_key(Snapshot *s, const char *key)
                 if (ifb && !strcmp(p->ifb, ifb)) r += p->rate_now;
             }
     } else if (ifc) {
-        r += iface_classes_rate(ifc);
-        if (!strstr(key, "|egress")) r += iface_paths_rate(ifc);
+        /* устройство: только egress-классы (корень исключён в iface_classes_rate).
+           Ingress не складываем — линк full-duplex: он виден на узлах
+           "▼ ingress" и серой полосой графика. */
+        r = iface_classes_rate(ifc);
     }
     g_free(dev); g_free(ifb);
     return r;
