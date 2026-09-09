@@ -857,7 +857,7 @@ static Snapshot *mock_snapshot(void)
 typedef enum { PACK_HW, PACK_VPNSRV, PACK_VPNCLI, PACK_N } PackKind;
 
 static const char *PACK_KEY[PACK_N]   = { "@hw", "@vpnserver", "@vpncli" };
-static const char *PACK_TITLE[PACK_N] = { N_("Реальное железо"),
+static const char *PACK_TITLE[PACK_N] = { N_("Реальное железо · интернет-канал"),
                                           N_("VPN-серверы"),
                                           N_("VPN-клиенты") };
 
@@ -971,14 +971,26 @@ static PackKind classify_iface(const TcIface *ifc)
     return PACK_HW;
 }
 
-/* агрегат пака: сумма rate_now всех его устройств (egress + ingress-пути) */
+/* агрегат пака.
+ * @hw — семантика «интернет-канал»: только аплинк (egress + ingress);
+ * форвард-трафик LAN↔интернет проходит через wan0 И brlan0 — суммировать
+ * оба = удвоить форвард. Локальные сервисы (SAMBA/Apache) в сумму не входят
+ * (не интернет-канал) — видны на строке brlan0 и в карточках.
+ * @vpnserver/@vpncli — внутренний (inner) трафик своих туннелей (classes+paths). */
+static TcIface *uplink_iface(Snapshot *s);
+
 static double rate_for_pack(Snapshot *s, PackKind pk)
 {
+    if (pk == PACK_HW) {
+        TcIface *up = uplink_iface(s);
+        if (!up) up = snapshot_find_iface(s, "wan0");
+        return up ? iface_classes_rate(up) + iface_paths_rate(up) : 0.0;
+    }
     double r = 0;
     for (guint i = 0; i < s->top->len; i++) {
         TcIface *ifc = g_ptr_array_index(s->top, i);
         if (classify_iface(ifc) == pk)
-            r += iface_classes_rate(ifc);
+            r += iface_classes_rate(ifc) + iface_paths_rate(ifc);
     }
     return r;
 }
