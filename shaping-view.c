@@ -190,6 +190,7 @@ typedef struct {
     gboolean  is_ifb;
     gboolean  referenced;  /* на устройство ссылается чужой mirred     */
     gboolean  is_tunnel;   /* tun/tap: sysfs speed мусор (10G)         */
+    char     *ip;          /* первый IPv4 (классификация сервер/клиент)*/
     double    link_bps;    /* ёмкость линка из sysfs (мост — max)      */
     gboolean  has_root;
     gboolean  has_htb;
@@ -235,6 +236,7 @@ static void tc_iface_free(gpointer p)
     TcIface *i = p;
     if (!i) return;
     g_free(i->name);
+    g_free(i->ip);
     g_ptr_array_unref(i->qdiscs);
     g_ptr_array_unref(i->classes);
     g_ptr_array_unref(i->paths);
@@ -387,9 +389,9 @@ static char *run_capture(const char *const argv[], GError **error)
     return result;
 }
 
-static GPtrArray *get_host_ips(Collector *c)
+/* адреса хоста + карта «устройство → первый IPv4» (для классификации паков) */
+static void get_addrs(Collector *c, GPtrArray *ips, GHashTable *dev_ip)
 {
-    GPtrArray *ips = g_ptr_array_new_with_free_func(g_free);
     const char *const argv[] = { c->ip, "-4", "-o", "addr", "show", NULL };
     GError *err = NULL;
 
@@ -399,9 +401,14 @@ static GPtrArray *get_host_ips(Collector *c)
         for (int i = 0; lines[i]; i++) {
             char **t = split_ws(lines[i]);
             int ix = tok_find(t, "inet");
-            if (ix >= 0 && t[ix + 1]) {
+            if (ix >= 1 && t[ix + 1]) {
                 char **ipp = g_strsplit(t[ix + 1], "/", 2);
-                if (ipp[0]) g_ptr_array_add(ips, g_strdup(ipp[0]));
+                if (ipp[0]) {
+                    g_ptr_array_add(ips, g_strdup(ipp[0]));
+                    /* первый IPv4 устройства: имя — токен перед "inet" */
+                    if (t[ix - 1] && !g_hash_table_contains(dev_ip, t[ix - 1]))
+                        g_hash_table_insert(dev_ip, g_strdup(t[ix - 1]), g_strdup(ipp[0]));
+                }
                 g_strfreev(ipp);
             }
             g_strfreev(t);
@@ -410,16 +417,22 @@ static GPtrArray *get_host_ips(Collector *c)
         g_free(out);
     }
     g_clear_error(&err);
-    return ips;
 }
 
-/* tun/tap-устройство? Ядро экспортирует /sys/class/net/<dev>/tun_flags */
+/* tun/tap-устройство? Ядро экспортирует /sys/class/net/<dev>/tun_flags.
+ * WireGuard экспортирует tun_flags — узнаём по имени wg<цифры>. */
 static gboolean iface_is_tunnel(const char *dev)
 {
     char *p = g_build_filename("/sys/class/net", dev, "tun_flags", NULL);
     gboolean r = g_file_test(p, G_FILE_TEST_EXISTS);
     g_free(p);
-    return r;
+    if (r) return TRUE;
+    if (!strncmp(dev, "wg", 2) && isdigit((unsigned char) dev[2])) {
+        const char *q = dev + 2;
+        while (*q && isdigit((unsigned char) *q)) q++;
+        if (!*q) return TRUE;
+    }
+    return FALSE;
 }
 
 /* скорость линка из sysfs, Мбит -> bps (0 = неизвестно) */
@@ -651,8 +664,10 @@ static Snapshot *collect_snapshot(Collector *c)
 
     if (!c->tc) { snapshot_free(s); return mock_snapshot(); }
 
-    /* 1) адреса хоста — для эвристики «локальный ingress» */
-    GPtrArray *ips = get_host_ips(c);
+    /* 1) адреса хоста и карта устройство→IP — для эвристик is_local и паков */
+    GPtrArray *ips = g_ptr_array_new_with_free_func(g_free);
+    GHashTable *dev_ip = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+    get_addrs(c, ips, dev_ip);
 
     /* 2) все qdisc-ы одним вызовом */
     const char *const a1[] = { c->tc, "-s", "qdisc", "show", NULL };
@@ -713,12 +728,15 @@ static Snapshot *collect_snapshot(Collector *c)
         }
     }
 
-    /* 6b) тип устройства и ёмкость линка (sysfs; туннелям speed не верим) */
+    /* 6b) тип устройства, ёмкость линка и IP (sysfs; туннелям speed не верим) */
     for (guint i = 0; i < s->ifaces->len; i++) {
         TcIface *ifc = g_ptr_array_index(s->ifaces, i);
         ifc->is_tunnel = iface_is_tunnel(ifc->name);
         ifc->link_bps = ifc->is_tunnel ? 0.0 : raw_capacity_bps(ifc->name);
+        char *ip = g_hash_table_lookup(dev_ip, ifc->name);
+        if (ip) { g_free(ifc->ip); ifc->ip = g_strdup(ip); }
     }
+    g_hash_table_unref(dev_ip);
 
     /* 7) верхний уровень: физические устройства с содержимым + автономные ifb */
     for (guint i = 0; i < s->ifaces->len; i++) {
@@ -938,6 +956,9 @@ static PackKind classify_iface(const TcIface *ifc)
     if (match_pattern_list(dev, APP.grp[PACK_HW]))     return PACK_HW;
 
     if (ifc->is_tunnel) {
+        /* IPv4 с последним октетом .1 — шлюз своего сегмента → сервер */
+        if (ifc->ip && g_str_has_suffix(ifc->ip, ".1")) return PACK_VPNSRV;
+        /* фолбэк по имени, если адреса нет (туннель опущен) */
         if (g_str_has_prefix(dev, "tap") ||
             strstr(dev, "server") || strstr(dev, "srv"))
             return PACK_VPNSRV;
