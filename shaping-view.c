@@ -190,6 +190,7 @@ typedef struct {
     gboolean  is_ifb;
     gboolean  referenced;  /* на устройство ссылается чужой mirred     */
     gboolean  is_tunnel;   /* tun/tap: sysfs speed мусор (10G)         */
+    gboolean  is_bridge;   /* мост: его трафик — транзит, не аплинк    */
     char     *ip;          /* первый IPv4 (классификация сервер/клиент)*/
     double    link_bps;    /* ёмкость линка из sysfs (мост — max)      */
     gboolean  has_root;
@@ -279,7 +280,7 @@ static TcIface *snapshot_iface(Snapshot *s, const char *dev)
 
 static TcIface *snapshot_find_iface(Snapshot *s, const char *dev)
 {
-    if (!dev) return NULL;
+    if (!s || !dev) return NULL;
     for (guint k = 0; k < s->ifaces->len; k++) {
         TcIface *x = s->ifaces->pdata[k];
         if (!strcmp(x->name, dev)) return x;
@@ -421,6 +422,15 @@ static void get_addrs(Collector *c, GPtrArray *ips, GHashTable *dev_ip)
         g_free(out);
     }
     g_clear_error(&err);
+}
+
+/* мост? /sys/class/net/<dev>/brif — каталог портов моста */
+static gboolean iface_is_bridge(const char *dev)
+{
+    char *p = g_build_filename("/sys/class/net", dev, "brif", NULL);
+    gboolean r = g_file_test(p, G_FILE_TEST_IS_DIR);
+    g_free(p);
+    return r;
 }
 
 /* tun/tap-устройство? Ядро экспортирует /sys/class/net/<dev>/tun_flags.
@@ -736,6 +746,7 @@ static Snapshot *collect_snapshot(Collector *c)
     for (guint i = 0; i < s->ifaces->len; i++) {
         TcIface *ifc = g_ptr_array_index(s->ifaces, i);
         ifc->is_tunnel = iface_is_tunnel(ifc->name);
+        ifc->is_bridge = iface_is_bridge(ifc->name);
         ifc->link_bps = ifc->is_tunnel ? 0.0 : raw_capacity_bps(ifc->name);
         char *ip = g_hash_table_lookup(dev_ip, ifc->name);
         if (ip) { g_free(ifc->ip); ifc->ip = g_strdup(ip); }
@@ -911,6 +922,7 @@ typedef struct {
     char           *sel_key;
     GKeyFile       *names;       /* [dev] classid = Имя                  */
     GPtrArray      *grp[PACK_N]; /* [groups]: glob-паттерны паков        */
+    char           *uplink_name; /* [groups] uplink = интернет-аплинк    */
 
     /* трей: StatusNotifier (libappindicator) или XEmbed GtkStatusIcon */
 #ifdef HAVE_APPINDICATOR
@@ -982,6 +994,7 @@ static TcIface *uplink_iface(Snapshot *s);
 static double rate_for_pack(Snapshot *s, PackKind pk)
 {
     if (pk == PACK_HW) {
+        if (!s) return 0.0;
         TcIface *up = uplink_iface(s);
         if (!up) up = snapshot_find_iface(s, "wan0");
         return up ? iface_classes_rate(up) + iface_paths_rate(up) : 0.0;
@@ -1005,17 +1018,23 @@ static TcClass *root_class_of(const TcIface *ifc)
     return NULL;
 }
 
-/* физическая основа для VPN: первое «железное» устройство с корнем или линком */
+/* интернет-аплинк: явный из конфига [groups] uplink, иначе первое
+ * «железное» НЕ-мостовое устройство с корнем или линком (мост brlan0 —
+ * транзит, его root rate не является аплинком) */
 static TcIface *uplink_iface(Snapshot *s)
 {
+    if (APP.uplink_name) {
+        TcIface *u = snapshot_find_iface(s, APP.uplink_name);
+        if (u) return u;
+    }
     for (guint i = 0; s && i < s->top->len; i++) {
         TcIface *ifc = g_ptr_array_index(s->top, i);
-        if (ifc->is_ifb || ifc->is_tunnel) continue;
+        if (ifc->is_ifb || ifc->is_tunnel || ifc->is_bridge) continue;
         if (classify_iface(ifc) != PACK_HW) continue;
         TcClass *rc = root_class_of(ifc);
         if ((rc && rc->rate_bps > 0) || ifc->link_bps > 0) return ifc;
     }
-    return NULL;
+    return snapshot_find_iface(s, "wan0");
 }
 
 /* шкала графика узла. Приоритет: rate корня → link → аплинк; 0 = «по счётчикам».
@@ -2544,6 +2563,7 @@ static void load_groups(App *a)
         g_strfreev(pats);
         g_free(v);
     }
+    a->uplink_name = g_key_file_get_string(a->names, "groups", "uplink", NULL);
 }
 
 static void load_names(App *a)
@@ -2593,6 +2613,7 @@ static void on_shutdown(GtkApplication *application, gpointer data)
     if (a->tray) { g_object_unref(a->tray); a->tray = NULL; }
     if (a->tray_menu) { gtk_widget_destroy(a->tray_menu); a->tray_menu = NULL; }
     if (a->names) { g_key_file_free(a->names); a->names = NULL; }
+    g_free(a->uplink_name); a->uplink_name = NULL;
 }
 
 int main(int argc, char **argv)
