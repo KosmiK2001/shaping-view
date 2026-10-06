@@ -2281,7 +2281,7 @@ static void show_about(GtkWindow *parent)
 
     dlg = gtk_dialog_new_with_buttons(_("About shaping-view"), parent, 0,
                                       _("Close"), GTK_RESPONSE_CLOSE, NULL);
-    gtk_window_set_default_size(GTK_WINDOW(dlg), 420, 380);
+    gtk_window_set_default_size(GTK_WINDOW(dlg), 380, 300);
     gtk_container_set_border_width(GTK_CONTAINER(dlg), 10);
     vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
     gtk_container_add(GTK_CONTAINER(gtk_dialog_get_content_area(GTK_DIALOG(dlg))),
@@ -2291,8 +2291,7 @@ static void show_about(GtkWindow *parent)
     gtk_label_set_markup(GTK_LABEL(lbl),
                          "<b><span size=\"x-large\">shaping-view</span></b> "
                          "<span size=\"large\">0.0.1</span>\n"
-                         "GTK3-обзор tc qdisc/class: HTB, ingress mirred/ifb,\n"
-                         "скорости, дропы, overlimits, backlog\n"
+                         "GTK3-обзор tc qdisc/class\n"
                          "<span size=\"small\">(c) 2026 kosmik2001 "
                          "&lt;kosmik2001@gmail.com&gt;</span>");
     gtk_widget_set_halign(lbl, GTK_ALIGN_CENTER);
