@@ -4,7 +4,8 @@
 msgid ""
 msgstr ""
 "Project-Id-Version: shaping-view 0.0.1\n"
-"Report-Msgid-Bugs-To: https://github.com/KosmiK2001/shaping-view/issues\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-10-06 22:35+0300\n"
 "PO-Revision-Date: 2026-10-06 22:00+0300\n"
 "Last-Translator: kosmik2001 <kosmik2001@gmail.com>\n"
 "Language-Team: Russian\n"
@@ -15,97 +16,196 @@ msgstr ""
 "Plural-Forms: nplurals=3; plural=(n%10==1 && n%100!=11 ? 0 : n%10>=2 && "
 "n%10<=4 && (n%100<10 || n%100>=20) ? 1 : 2);\n"
 
+#: shaping-view.c:621
+msgid "матч"
+msgstr "матч"
+
+#: shaping-view.c:871
 msgid "Physical hardware · uplink"
-msgstr "Реальное железо · интернет-канал"
+msgstr ""
 
 #: shaping-view.c:872
 msgid "VPN servers"
-msgstr "VPN-серверы"
+msgstr ""
 
 #: shaping-view.c:873
 msgid "VPN clients"
-msgstr "VPN-клиенты"
+msgstr ""
+
+#: shaping-view.c:1145
+msgid "Входящий: локальный (на хост)"
+msgstr "Входящий: локальный (на хост)"
+
+#: shaping-view.c:1146
+msgid "Входящий: форвард (остальное)"
+msgstr "Входящий: форвард (остальное)"
+
+#: shaping-view.c:1147
+msgid "Входящий: весь входящий"
+msgstr "Входящий: весь входящий"
+
+#: shaping-view.c:1148
+#, c-format
+msgid "Входящий: %s"
+msgstr "Входящий: %s"
+
+#: shaping-view.c:1159
+msgid "класс HTB"
+msgstr "класс HTB"
+
+#: shaping-view.c:1353
+msgid "Дропы:"
+msgstr "Дропы:"
+
+#: shaping-view.c:1356
+msgid "Оверлимиты:"
+msgstr "Оверлимиты:"
+
+#: shaping-view.c:1358
+msgid "Бэклог:"
+msgstr "Бэклог:"
 
 #: shaping-view.c:1401
 msgid "No HTB classes on this node"
-msgstr "Нет классов HTB на этом узле"
+msgstr ""
 
 #: shaping-view.c:1402
 msgid "Select a device in the tree on the left"
-msgstr "Выберите устройство в дереве слева"
+msgstr ""
 
-#: shaping-view.c:2260
+#: shaping-view.c:1411
+#, c-format
+msgid "Иерархия: <b>%s</b> · классов: %u · сумма: <b>%s</b>"
+msgstr "Иерархия: <b>%s</b> · классов: %u · сумма: <b>%s</b>"
+
+#: shaping-view.c:1505
+msgid "Исходящий (egress)"
+msgstr "Исходящий (egress)"
+
+#: shaping-view.c:1610
+#, c-format
+msgid "Узел: <b>%s</b> · скорость: <b>%s</b>"
+msgstr "Узел: <b>%s</b> · скорость: <b>%s</b>"
+
+#: shaping-view.c:1622
+#, c-format
+msgid "ДЕМО: tc не найден — показаны мок-данные · период %d с · обновлено %s"
+msgstr "ДЕМО: tc не найден — показаны мок-данные · период %d с · обновлено %s"
+
+#: shaping-view.c:1625
+msgid "ошибка:"
+msgstr "ошибка:"
+
+#: shaping-view.c:1625
+msgid "период"
+msgstr "период"
+
+#: shaping-view.c:1629
+#, c-format
+msgid "обновлено %s · период %d с · tc: %s"
+msgstr "обновлено %s · период %d с · tc: %s"
+
+#: shaping-view.c:1633
+msgid "ДЕМО-режим"
+msgstr "ДЕМО-режим"
+
+#: shaping-view.c:1883 shaping-view.c:1888
+msgid "шкала:"
+msgstr "шкала:"
+
+#: shaping-view.c:1891
+msgid "сейчас:"
+msgstr "сейчас:"
+
+#: shaping-view.c:1894
+msgid "Δ корень−Σ:"
+msgstr "Δ корень−Σ:"
+
+#: shaping-view.c:2262
 msgid "Credits"
-msgstr "Благодарности"
+msgstr ""
 
-#: shaping-view.c:2276
+#: shaping-view.c:2278
 msgid "License"
-msgstr "License"
+msgstr ""
 
-#: shaping-view.c:2288
+#: shaping-view.c:2290
 msgid "About shaping-view"
-msgstr "О программе shaping-view"
+msgstr ""
 
-#: shaping-view.c:2289
+#: shaping-view.c:2291
 msgid "Close"
-msgstr "Закрыть"
+msgstr ""
 
-#: shaping-view.c:2349
+#: shaping-view.c:2351
 msgid "Show / hide"
-msgstr "Показать / скрыть"
-
-#: shaping-view.c:2350
-msgid "Pause polling"
-msgstr "Пауза опроса"
+msgstr ""
 
 #: shaping-view.c:2352
+msgid "Pause polling"
+msgstr ""
+
+#: shaping-view.c:2354
 msgid "About"
-msgstr "About"
+msgstr ""
 
-#: shaping-view.c:2353
+#: shaping-view.c:2355
 msgid "Quit"
-msgstr "Выход"
+msgstr ""
 
-#: shaping-view.c:2549
+#: shaping-view.c:2382 shaping-view.c:2421
+msgid "Шейпинг tc"
+msgstr "Шейпинг tc"
+
+#: shaping-view.c:2394 shaping-view.c:2436
+#, c-format
+msgid "Шейпинг tc · суммарно: %s%s"
+msgstr "Шейпинг tc · суммарно: %s%s"
+
+#: shaping-view.c:2394 shaping-view.c:2436
+msgid " (ДЕМО)"
+msgstr " (ДЕМО)"
+
+#: shaping-view.c:2551
 msgid "Device / node"
-msgstr "Устройство / узел"
+msgstr ""
 
-#: shaping-view.c:2566
+#: shaping-view.c:2568
 msgid "Direction"
-msgstr "Направление"
+msgstr ""
 
-#: shaping-view.c:2572
+#: shaping-view.c:2574
 msgid "Rate"
-msgstr "Скорость"
+msgstr ""
 
-#: shaping-view.c:2591
+#: shaping-view.c:2593
 msgid "Select a device on the left"
-msgstr "Выберите устройство слева"
+msgstr ""
 
-#: shaping-view.c:2613
+#: shaping-view.c:2615
 msgid "tc shaping — overview"
-msgstr "Шейпинг tc — обзор"
+msgstr ""
 
-#: shaping-view.c:2619
+#: shaping-view.c:2621
 msgid "Pause"
-msgstr "Пауза"
+msgstr ""
 
-#: shaping-view.c:2620
+#: shaping-view.c:2622
 msgid "Pause/resume polling"
-msgstr "Приостановить/возобновить опрос"
+msgstr ""
 
-#: shaping-view.c:2626
+#: shaping-view.c:2628
 msgid "Polling period, s"
-msgstr "Период опроса, с"
-
-#: shaping-view.c:2630
-msgid "Full height"
-msgstr "Во всю высоту"
+msgstr ""
 
 #: shaping-view.c:2632
-msgid "Stretch the graph: hide the queue list above"
-msgstr "Растянуть график: спрятать список очередей сверху"
+msgid "Full height"
+msgstr ""
 
-#: shaping-view.c:2644
+#: shaping-view.c:2634
+msgid "Stretch the graph: hide the queue list above"
+msgstr ""
+
+#: shaping-view.c:2646
 msgid "Rate history (last 60 samples)"
-msgstr "История скорости (последние 60 отсчётов)"
+msgstr ""

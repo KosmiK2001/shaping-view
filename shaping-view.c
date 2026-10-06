@@ -618,7 +618,7 @@ static void parse_ingress_dev(TcIface *dev, const char *out, const GPtrArray *ho
                     if (at_off == 16 && ip_in_list(host_ips, match_ip))
                         cur->is_local = TRUE;
                 } else {
-                    cur->desc = g_strdup("матч");
+                    cur->desc = g_strdup(_("матч"));
                 }
                 g_ptr_array_add(dev->paths, cur);
             }
@@ -1142,10 +1142,10 @@ static double hist_value_at(History *h, int slot)
 
 static char *ingress_child_label(const TcIngressPath *p, guint npaths)
 {
-    if (p->is_local) return g_strdup("Входящий: локальный (на хост)");
-    if (p->matchall) return g_strdup(npaths > 1 ? "Входящий: форвард (остальное)"
-                                                : "Входящий: весь входящий");
-    return g_strdup_printf("Входящий: %s", p->desc ? p->desc : "?");
+    if (p->is_local) return g_strdup(_("Входящий: локальный (на хост)"));
+    if (p->matchall) return g_strdup(npaths > 1 ? _("Входящий: форвард (остальное)")
+                                                : _("Входящий: весь входящий"));
+    return g_strdup_printf(_("Входящий: %s"), p->desc ? p->desc : "?");
 }
 
 static char *auto_tag(const TcClass *cl)
@@ -1156,7 +1156,7 @@ static char *auto_tag(const TcClass *cl)
         if (g->len) g_string_append(g, " · ");
         g_string_append_printf(g, "leaf %s", cl->leaf);
     }
-    if (!g->len) g_string_append(g, "класс HTB");
+    if (!g->len) g_string_append(g, _("класс HTB"));
     return g_string_free(g, FALSE);
 }
 
@@ -1349,13 +1349,13 @@ static void update_cards(Snapshot *s)
         const char *backlog = backlog_for_class(ifc, cl);
         if (!backlog) backlog = cl->backlog ? cl->backlog : "—";
         char *m1 = g_strdup_printf(
-            "<span foreground='#ffffff'>Дропы:</span> <span foreground='#ff5252'>%llu</span>",
-            (unsigned long long) cl->dropped);
+            "<span foreground='#ffffff'>%s</span> <span foreground='#ff5252'>%llu</span>",
+            _("Дропы:"), (unsigned long long) cl->dropped);
         char *m2 = g_strdup_printf(
-            "<span foreground='#ffffff'>Оверлимиты:</span> <span foreground='#ffb74d'>%llu</span>",
-            (unsigned long long) cl->overlimits);
+            "<span foreground='#ffffff'>%s</span> <span foreground='#ffb74d'>%llu</span>",
+            _("Оверлимиты:"), (unsigned long long) cl->overlimits);
         char *m3 = g_strdup_printf(
-            "<span foreground='#ffffff'>Бэклог:</span> <span foreground='#4fc3f7'>%s</span>", backlog);
+            "<span foreground='#ffffff'>%s</span> <span foreground='#4fc3f7'>%s</span>", _("Бэклог:"), backlog);
         gtk_label_set_markup(cr->st_drops, m1);
         gtk_label_set_markup(cr->st_over, m2);
         gtk_label_set_markup(cr->st_back, m3);
@@ -1408,7 +1408,7 @@ static void rebuild_cards(Snapshot *s)
 
     char *sum = fmt_rate(iface_classes_rate(ifc));
     char *info = g_strdup_printf(
-        "Иерархия: <b>%s</b> · классов: %u · сумма: <b>%s</b>",
+        _("Иерархия: <b>%s</b> · классов: %u · сумма: <b>%s</b>"),
         dn, (guint) ifc->classes->len, sum);
     gtk_label_set_markup(APP.info, info);
     g_free(sum); g_free(info);
@@ -1502,7 +1502,7 @@ static void apply_snapshot(App *a, Snapshot *s)
             if (ifc->classes->len > 0 || ifc->has_htb) {
                 char *ck = g_strdup_printf("%s|egress", ifc->name);
                 GtkTreeIter ci;
-                upsert_row(ck, "Исходящий (egress)",
+                upsert_row(ck, _("Исходящий (egress)"),
                            "<span foreground='#2e7d32'>▲ egress</span>", &dev_it, &ci, &created_d);
                 g_hash_table_add(present, g_strdup(ck));
                 created_any |= created_d;
@@ -1607,7 +1607,7 @@ static void apply_snapshot(App *a, Snapshot *s)
     if (a->sel_key) {
         double r = rate_for_key(s, a->sel_key);
         char *rt = fmt_rate(r);
-        char *m = g_strdup_printf("Узел: <b>%s</b> · скорость: <b>%s</b>", a->sel_key, rt);
+        char *m = g_strdup_printf(_("Узел: <b>%s</b> · скорость: <b>%s</b>"), a->sel_key, rt);
         gtk_label_set_markup(a->info, m);
         g_free(m); g_free(rt);
     }
@@ -1618,17 +1618,19 @@ static void apply_snapshot(App *a, Snapshot *s)
         char *ts = g_date_time_format(dt, "%H:%M:%S");
         char *st;
         if (s->mock)
-            st = g_strdup_printf("<span size='small' foreground='#e65100'>ДЕМО: tc не найден — показаны мок-данные · период %d с · обновлено %s</span>",
+            st = g_strdup_printf("<span size='small' foreground='#e65100'>%s</span>",
+                                 _("ДЕМО: tc не найден — показаны мок-данные · период %d с · обновлено %s"),
                                  (int)(g_atomic_int_get(&a->interval_ms) / 1000), ts);
         else if (s->error)
-            st = g_strdup_printf("<span size='small' foreground='#c62828'>ошибка: %s · период %d с</span>", s->error,
+            st = g_strdup_printf("<span size='small' foreground='#c62828'>%s %s · %s %d с</span>", _("ошибка:"), s->error, _("период"),
                                  (int)(g_atomic_int_get(&a->interval_ms) / 1000));
         else
-            st = g_strdup_printf("<span size='small' foreground='#607d8b'>обновлено %s · период %d с · tc: %s</span>",
+            st = g_strdup_printf("<span size='small' foreground='#607d8b'>%s</span>",
+                                 _("обновлено %s · период %d с · tc: %s"),
                                  ts, (int)(g_atomic_int_get(&a->interval_ms) / 1000), a->tc_path);
         gtk_label_set_markup(a->status, st);
         gtk_header_bar_set_subtitle(GTK_HEADER_BAR(a->header),
-                                    s->mock ? "ДЕМО-режим" : g_get_host_name());
+                                    s->mock ? _("ДЕМО-режим") : g_get_host_name());
         tray_update_status(s);
         g_free(st); g_free(ts); g_date_time_unref(dt);
     }
@@ -1877,19 +1879,19 @@ static gboolean on_graph_draw(GtkWidget *w, cairo_t *cr, gpointer data)
         char *zs = (zoom >= 10) ? g_strdup_printf("×%.0f", zoom)
                                 : g_strdup_printf("×%.1f", zoom);
         lbl1 = g_strdup_printf(
-            "<span foreground='#cfd8dc' size='small'>шкала: <b>%s</b> · %s · <span foreground='#ffb300'>%s</span></span>",
-            fmt_rate(scale), src ? src : "?", zs);
+            "<span foreground='#cfd8dc' size='small'>%s <b>%s</b> · %s · <span foreground='#ffb300'>%s</span></span>",
+            _("шкала:"), fmt_rate(scale), src ? src : "?", zs);
         g_free(zs);
     } else {
         lbl1 = g_strdup_printf(
-            "<span foreground='#cfd8dc' size='small'>шкала: <b>%s</b> · %s</span>",
-            fmt_rate(scale), src ? src : "?");
+            "<span foreground='#cfd8dc' size='small'>%s <b>%s</b> · %s</span>",
+            _("шкала:"), fmt_rate(scale), src ? src : "?");
     }
     char *lbl2 = g_strdup_printf(
-        "<span foreground='#cfd8dc' size='small'>сейчас: <b>%s</b></span>", fmt_rate(dsum));
+        "<span foreground='#cfd8dc' size='small'>%s <b>%s</b></span>", _("сейчас:"), fmt_rate(dsum));
     char *dcol = (fabs(delta) > scale * 0.03) ? "#ffb300" : "#78909c";
     char *lbl3 = g_strdup_printf(
-        "<span foreground='%s' size='small'>Δ корень−Σ: %s</span>", dcol, fmt_rate(delta));
+        "<span foreground='%s' size='small'>%s %s</span>", dcol, _("Δ корень−Σ:"), fmt_rate(delta));
 
     PangoLayout *pl = gtk_widget_create_pango_layout(w, NULL);
     pango_layout_set_markup(pl, lbl1, -1);
@@ -2377,7 +2379,7 @@ static void tray_init(void)
     app_indicator_set_status(APP.tray, APP_INDICATOR_STATUS_ACTIVE);
     app_indicator_set_icon_full(APP.tray, "network-wired", "shaping-view");
     app_indicator_set_menu(APP.tray, GTK_MENU(APP.tray_menu));
-    app_indicator_set_title(APP.tray, "Шейпинг tc");
+    app_indicator_set_title(APP.tray, _("Шейпинг tc"));
 }
 
 static void tray_update_status(Snapshot *s)
@@ -2389,7 +2391,7 @@ static void tray_update_status(Snapshot *s)
         if (!ifc->is_ifb) r += iface_classes_rate(ifc) + iface_paths_rate(ifc);
     }
     char *rt = fmt_rate(r);
-    char *t = g_strdup_printf("Шейпинг tc · суммарно: %s%s", rt, s->mock ? " (ДЕМО)" : "");
+    char *t = g_strdup_printf(_("Шейпинг tc · суммарно: %s%s"), rt, s->mock ? _(" (ДЕМО)") : "");
     app_indicator_set_title(APP.tray, t);
     g_free(rt); g_free(t);
 }
@@ -2416,7 +2418,7 @@ static void tray_init(void)
 {
     APP.tray_menu = tray_build_menu();
     APP.tray = gtk_status_icon_new_from_icon_name("network-wired");
-    gtk_status_icon_set_tooltip_markup(APP.tray, "Шейпинг tc");
+    gtk_status_icon_set_tooltip_markup(APP.tray, _("Шейпинг tc"));
     gtk_status_icon_set_visible(APP.tray, TRUE);
     g_signal_connect(APP.tray, "activate", G_CALLBACK(tray_activate_cb), NULL);
     g_signal_connect(APP.tray, "popup-menu", G_CALLBACK(tray_popup_cb), NULL);
@@ -2431,7 +2433,7 @@ static void tray_update_status(Snapshot *s)
         if (!ifc->is_ifb) r += iface_classes_rate(ifc) + iface_paths_rate(ifc);
     }
     char *rt = fmt_rate(r);
-    char *t = g_strdup_printf("Шейпинг tc · суммарно: %s%s", rt, s->mock ? " (ДЕМО)" : "");
+    char *t = g_strdup_printf(_("Шейпинг tc · суммарно: %s%s"), rt, s->mock ? _(" (ДЕМО)") : "");
     gtk_status_icon_set_tooltip_markup(APP.tray, t);
     g_free(rt); g_free(t);
 }

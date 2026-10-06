@@ -19,96 +19,96 @@ msgstr ""
 
 #: shaping-view.c:871
 msgid "Physical hardware · uplink"
-msgstr "Physische Hardware · Uplink"
+msgstr ""
 
 #: shaping-view.c:872
 msgid "VPN servers"
-msgstr "VPN-Server"
+msgstr ""
 
 #: shaping-view.c:873
 msgid "VPN clients"
-msgstr "VPN-Clients"
+msgstr ""
 
 #: shaping-view.c:1401
 msgid "No HTB classes on this node"
-msgstr "Keine HTB-Klassen auf diesem Knoten"
+msgstr ""
 
 #: shaping-view.c:1402
 msgid "Select a device in the tree on the left"
-msgstr "Links in der Baumansicht ein Gerät wählen"
+msgstr ""
 
 #: shaping-view.c:2260
 msgid "Credits"
-msgstr "Mitwirkende"
+msgstr ""
 
 #: shaping-view.c:2276
 msgid "License"
-msgstr "Lizenz"
+msgstr ""
 
 #: shaping-view.c:2288
 msgid "About shaping-view"
-msgstr "Über shaping-view"
+msgstr ""
 
 #: shaping-view.c:2289
 msgid "Close"
-msgstr "Schließen"
+msgstr ""
 
 #: shaping-view.c:2349
 msgid "Show / hide"
-msgstr "Anzeigen / ausblenden"
+msgstr ""
 
 #: shaping-view.c:2350
 msgid "Pause polling"
-msgstr "Abfrage pausieren"
+msgstr ""
 
 #: shaping-view.c:2352
 msgid "About"
-msgstr "Info"
+msgstr ""
 
 #: shaping-view.c:2353
 msgid "Quit"
-msgstr "Beenden"
+msgstr ""
 
 #: shaping-view.c:2549
 msgid "Device / node"
-msgstr "Gerät / Knoten"
+msgstr ""
 
 #: shaping-view.c:2566
 msgid "Direction"
-msgstr "Richtung"
+msgstr ""
 
 #: shaping-view.c:2572
 msgid "Rate"
-msgstr "Rate"
+msgstr ""
 
 #: shaping-view.c:2591
 msgid "Select a device on the left"
-msgstr "Links ein Gerät wählen"
+msgstr ""
 
 #: shaping-view.c:2613
 msgid "tc shaping — overview"
-msgstr "tc-Shaping — Übersicht"
+msgstr ""
 
 #: shaping-view.c:2619
 msgid "Pause"
-msgstr "Pause"
+msgstr ""
 
 #: shaping-view.c:2620
 msgid "Pause/resume polling"
-msgstr "Abfrage anhalten/fortsetzen"
+msgstr ""
 
 #: shaping-view.c:2626
 msgid "Polling period, s"
-msgstr "Abfrageintervall, s"
+msgstr ""
 
 #: shaping-view.c:2630
 msgid "Full height"
-msgstr "Volle Höhe"
+msgstr ""
 
 #: shaping-view.c:2632
 msgid "Stretch the graph: hide the queue list above"
-msgstr "Diagramm vergrößern: Warteschlangenliste oben ausblenden"
+msgstr ""
 
 #: shaping-view.c:2644
 msgid "Rate history (last 60 samples)"
-msgstr "Ratenverlauf (letzte 60 Messungen)"
+msgstr ""
