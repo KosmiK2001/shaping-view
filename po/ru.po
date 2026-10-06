@@ -1,0 +1,111 @@
+# Russian translations for shaping-view package.
+# Copyright (C) 2026 kosmik2001
+# This file is distributed under the MIT license.
+msgid ""
+msgstr ""
+"Project-Id-Version: shaping-view 0.0.1\n"
+"Report-Msgid-Bugs-To: https://github.com/KosmiK2001/shaping-view/issues\n"
+"PO-Revision-Date: 2026-10-06 22:00+0300\n"
+"Last-Translator: kosmik2001 <kosmik2001@gmail.com>\n"
+"Language-Team: Russian\n"
+"Language: ru\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=3; plural=(n%10==1 && n%100!=11 ? 0 : n%10>=2 && "
+"n%10<=4 && (n%100<10 || n%100>=20) ? 1 : 2);\n"
+
+msgid "Physical hardware · uplink"
+msgstr "Реальное железо · интернет-канал"
+
+#: shaping-view.c:872
+msgid "VPN servers"
+msgstr "VPN-серверы"
+
+#: shaping-view.c:873
+msgid "VPN clients"
+msgstr "VPN-клиенты"
+
+#: shaping-view.c:1401
+msgid "No HTB classes on this node"
+msgstr "Нет классов HTB на этом узле"
+
+#: shaping-view.c:1402
+msgid "Select a device in the tree on the left"
+msgstr "Выберите устройство в дереве слева"
+
+#: shaping-view.c:2260
+msgid "Credits"
+msgstr "Благодарности"
+
+#: shaping-view.c:2276
+msgid "License"
+msgstr "License"
+
+#: shaping-view.c:2288
+msgid "About shaping-view"
+msgstr "О программе shaping-view"
+
+#: shaping-view.c:2289
+msgid "Close"
+msgstr "Закрыть"
+
+#: shaping-view.c:2349
+msgid "Show / hide"
+msgstr "Показать / скрыть"
+
+#: shaping-view.c:2350
+msgid "Pause polling"
+msgstr "Пауза опроса"
+
+#: shaping-view.c:2352
+msgid "About"
+msgstr "About"
+
+#: shaping-view.c:2353
+msgid "Quit"
+msgstr "Выход"
+
+#: shaping-view.c:2549
+msgid "Device / node"
+msgstr "Устройство / узел"
+
+#: shaping-view.c:2566
+msgid "Direction"
+msgstr "Направление"
+
+#: shaping-view.c:2572
+msgid "Rate"
+msgstr "Скорость"
+
+#: shaping-view.c:2591
+msgid "Select a device on the left"
+msgstr "Выберите устройство слева"
+
+#: shaping-view.c:2613
+msgid "tc shaping — overview"
+msgstr "Шейпинг tc — обзор"
+
+#: shaping-view.c:2619
+msgid "Pause"
+msgstr "Пауза"
+
+#: shaping-view.c:2620
+msgid "Pause/resume polling"
+msgstr "Приостановить/возобновить опрос"
+
+#: shaping-view.c:2626
+msgid "Polling period, s"
+msgstr "Период опроса, с"
+
+#: shaping-view.c:2630
+msgid "Full height"
+msgstr "Во всю высоту"
+
+#: shaping-view.c:2632
+msgid "Stretch the graph: hide the queue list above"
+msgstr "Растянуть график: спрятать список очередей сверху"
+
+#: shaping-view.c:2644
+msgid "Rate history (last 60 samples)"
+msgstr "История скорости (последние 60 отсчётов)"

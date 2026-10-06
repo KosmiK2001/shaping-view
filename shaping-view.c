@@ -868,9 +868,9 @@ static Snapshot *mock_snapshot(void)
 typedef enum { PACK_HW, PACK_VPNSRV, PACK_VPNCLI, PACK_N } PackKind;
 
 static const char *PACK_KEY[PACK_N]   = { "@hw", "@vpnserver", "@vpncli" };
-static const char *PACK_TITLE[PACK_N] = { N_("Реальное железо · интернет-канал"),
-                                          N_("VPN-серверы"),
-                                          N_("VPN-клиенты") };
+static const char *PACK_TITLE[PACK_N] = { N_("Physical hardware · uplink"),
+                                          N_("VPN servers"),
+                                          N_("VPN clients") };
 
 /* =============================== UI =============================== */
 
@@ -1398,8 +1398,8 @@ static void rebuild_cards(Snapshot *s)
     TcIface *ifc = (s && dn) ? snapshot_find_iface(s, dn) : NULL;
     if (!ifc || ifc->classes->len == 0) {
         char *m = g_strdup_printf("<i>%s</i>", dn
-                ? _("Нет классов HTB на этом узле")
-                : _("Выберите устройство в дереве слева"));
+                ? _("No HTB classes on this node")
+                : _("Select a device in the tree on the left"));
         gtk_label_set_markup(APP.info, m);
         g_free(m);
         g_free(dev); g_free(ifb);
@@ -2257,7 +2257,7 @@ static GtkWidget *about_build_tabs(void)
         gtk_box_pack_start(GTK_BOX(row), cv, TRUE, TRUE, 0);
         gtk_box_pack_start(GTK_BOX(dbox), row, FALSE, FALSE, 2);
     }
-    gtk_notebook_append_page(GTK_NOTEBOOK(nb), dbox, gtk_label_new(_("Благодарности")));
+    gtk_notebook_append_page(GTK_NOTEBOOK(nb), dbox, gtk_label_new(_("Credits")));
 
     cred = gtk_label_new(about_mit_text);
     gtk_label_set_selectable(GTK_LABEL(cred), TRUE);
@@ -2287,7 +2287,7 @@ static void show_about(GtkWindow *parent)
 
     dlg = gtk_dialog_new_with_buttons(_("About shaping-view"), parent, 0,
                                       _("Close"), GTK_RESPONSE_CLOSE, NULL);
-    gtk_window_set_default_size(GTK_WINDOW(dlg), 380, 300);
+    gtk_window_set_default_size(GTK_WINDOW(dlg), 490, 300);
     gtk_container_set_border_width(GTK_CONTAINER(dlg), 10);
     vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
     gtk_container_add(GTK_CONTAINER(gtk_dialog_get_content_area(GTK_DIALOG(dlg))),
@@ -2346,11 +2346,11 @@ static gboolean win_state_event(GtkWidget *w, GdkEventWindowState *e, gpointer d
 static GtkWidget *tray_build_menu(void)
 {
     GtkWidget *menu = gtk_menu_new();
-    GtkWidget *mi_show = gtk_menu_item_new_with_label(_("Показать / скрыть"));
-    APP.mi_pause = GTK_CHECK_MENU_ITEM(gtk_check_menu_item_new_with_label(_("Пауза опроса")));
+    GtkWidget *mi_show = gtk_menu_item_new_with_label(_("Show / hide"));
+    APP.mi_pause = GTK_CHECK_MENU_ITEM(gtk_check_menu_item_new_with_label(_("Pause polling")));
     GtkWidget *sep = gtk_separator_menu_item_new();
     GtkWidget *mi_about = gtk_menu_item_new_with_label(_("About"));
-    GtkWidget *mi_quit = gtk_menu_item_new_with_label(_("Выход"));
+    GtkWidget *mi_quit = gtk_menu_item_new_with_label(_("Quit"));
 
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi_show);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), GTK_WIDGET(APP.mi_pause));
@@ -2546,7 +2546,7 @@ static GtkWidget *make_left(void)
 
     /* колонка имени: обычный текст + striped-рендерер для строк паков (@…) */
     c = gtk_tree_view_column_new();
-    gtk_tree_view_column_set_title(c, _("Устройство / узел"));
+    gtk_tree_view_column_set_title(c, _("Device / node"));
     gtk_tree_view_column_set_expand(c, TRUE);
 
     r = gtk_cell_renderer_text_new();
@@ -2563,13 +2563,13 @@ static GtkWidget *make_left(void)
     gtk_tree_view_append_column(GTK_TREE_VIEW(APP.tree), c);
 
     r = gtk_cell_renderer_text_new();
-    c = gtk_tree_view_column_new_with_attributes(_("Направление"), r,
+    c = gtk_tree_view_column_new_with_attributes(_("Direction"), r,
                                                  "markup", COL_BADGE, NULL);
     gtk_tree_view_append_column(GTK_TREE_VIEW(APP.tree), c);
 
     r = gtk_cell_renderer_text_new();
     g_object_set(r, "xalign", 1.0, "family", "monospace", NULL);
-    c = gtk_tree_view_column_new_with_attributes(_("Скорость"), r,
+    c = gtk_tree_view_column_new_with_attributes(_("Rate"), r,
                                                  "text", COL_RATE, NULL);
     gtk_tree_view_append_column(GTK_TREE_VIEW(APP.tree), c);
 
@@ -2588,7 +2588,7 @@ static GtkWidget *make_right(void)
     GtkWidget *v = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
     gtk_container_set_border_width(GTK_CONTAINER(v), 6);
 
-    APP.info = GTK_LABEL(gtk_label_new(_("Выберите устройство слева")));
+    APP.info = GTK_LABEL(gtk_label_new(_("Select a device on the left")));
     gtk_label_set_xalign(APP.info, 0.0);
     gtk_box_pack_start(GTK_BOX(v), GTK_WIDGET(APP.info), FALSE, FALSE, 0);
 
@@ -2610,26 +2610,26 @@ static void build_ui(App *a)
 
     GtkWidget *hb = gtk_header_bar_new();
     gtk_header_bar_set_show_close_button(GTK_HEADER_BAR(hb), TRUE);
-    gtk_header_bar_set_title(GTK_HEADER_BAR(hb), _("Шейпинг tc — обзор"));
+    gtk_header_bar_set_title(GTK_HEADER_BAR(hb), _("tc shaping — overview"));
     gtk_header_bar_set_has_subtitle(GTK_HEADER_BAR(hb), TRUE);
     gtk_header_bar_set_subtitle(GTK_HEADER_BAR(hb), g_get_host_name());
     gtk_window_set_titlebar(GTK_WINDOW(a->win), hb);
     a->header = hb;
 
-    a->btn_pause = gtk_toggle_button_new_with_label(_("Пауза"));
-    gtk_widget_set_tooltip_text(a->btn_pause, _("Приостановить/возобновить опрос"));
+    a->btn_pause = gtk_toggle_button_new_with_label(_("Pause"));
+    gtk_widget_set_tooltip_text(a->btn_pause, _("Pause/resume polling"));
     g_signal_connect(a->btn_pause, "toggled", G_CALLBACK(on_pause_toggled), a);
     gtk_header_bar_pack_start(GTK_HEADER_BAR(hb), a->btn_pause);
 
     a->spin = gtk_spin_button_new_with_range(1, 10, 1);
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(a->spin), DEF_INTERVAL_MS / 1000);
-    gtk_widget_set_tooltip_text(a->spin, _("Период опроса, с"));
+    gtk_widget_set_tooltip_text(a->spin, _("Polling period, s"));
     g_signal_connect(a->spin, "value-changed", G_CALLBACK(on_interval_changed), a);
     gtk_header_bar_pack_start(GTK_HEADER_BAR(hb), a->spin);
 
-    a->btn_expand = gtk_toggle_button_new_with_label(_("Во всю высоту"));
+    a->btn_expand = gtk_toggle_button_new_with_label(_("Full height"));
     gtk_widget_set_tooltip_text(a->btn_expand,
-                                _("Растянуть график: спрятать список очередей сверху"));
+                                _("Stretch the graph: hide the queue list above"));
     g_signal_connect(a->btn_expand, "toggled", G_CALLBACK(on_expand_toggled), a);
     gtk_header_bar_pack_end(GTK_HEADER_BAR(hb), a->btn_expand);
 
@@ -2641,7 +2641,7 @@ static void build_ui(App *a)
     gtk_paned_pack2(GTK_PANED(hp), make_right(), TRUE, FALSE);
     gtk_paned_set_position(GTK_PANED(hp), 340);
 
-    GtkWidget *gframe = gtk_frame_new(_("История скорости (последние 60 отсчётов)"));
+    GtkWidget *gframe = gtk_frame_new(_("Rate history (last 60 samples)"));
     gtk_container_set_border_width(GTK_CONTAINER(gframe), 2);
     a->graph = gtk_drawing_area_new();
     gtk_widget_set_size_request(a->graph, -1, 150);
@@ -2769,7 +2769,10 @@ int main(int argc, char **argv)
 {
     setlocale(LC_ALL, "");
 #if ENABLE_NLS
-    bindtextdomain("shaping-view", NULL);
+# ifndef LOCALEDIR
+#  define LOCALEDIR "/usr/share/locale"
+# endif
+    bindtextdomain("shaping-view", LOCALEDIR);
     textdomain("shaping-view");
 #endif
     (void) argc; (void) argv;

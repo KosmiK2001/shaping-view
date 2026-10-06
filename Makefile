@@ -54,4 +54,23 @@ run-debug: debug
 clean:
 	rm -f $(BIN) $(BIN_DBG) $(BIN_SAN)
 
-.PHONY: all debug sanitize release run run-debug clean
+.PHONY: all debug sanitize release run run-debug clean locale
+
+# ---------------------------------------------------------------
+# NLS: переводы (gettext). LOCALEDIR задаётся снаружи (ebuild):
+#   make LOCALEDIR=/usr/share/locale
+# locale        — сборка .mo из po/*.po в build/locale/<lang>/LC_MESSAGES/
+# ---------------------------------------------------------------
+LOCALEDIR ?= /usr/share/locale
+PO := $(wildcard po/*.po)
+MO := $(PO:po/%.po=build/locale/%/LC_MESSAGES/shaping-view.mo)
+
+CFLAGS += -DENABLE_NLS -DLOCALEDIR='"$(LOCALEDIR)"' -Ibuild
+
+build/locale/%/LC_MESSAGES/shaping-view.mo: po/%.po
+	@mkdir -p $(dir $@)
+	msgfmt -o $@ $<
+
+locale: $(MO)
+
+.PHONY: locale

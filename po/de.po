@@ -1,0 +1,114 @@
+# German translations for shaping-view-gtk package.
+# Copyright (C) 2026 THE shaping-view-gtk'S COPYRIGHT HOLDER
+# This file is distributed under the same license as the shaping-view-gtk package.
+# Automatically generated, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: shaping-view-gtk 3\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-10-06 22:21+0300\n"
+"PO-Revision-Date: 2026-10-06 22:21+0300\n"
+"Last-Translator: Automatically generated\n"
+"Language-Team: none\n"
+"Language: de\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+#: shaping-view.c:871
+msgid "Physical hardware · uplink"
+msgstr "Physische Hardware · Uplink"
+
+#: shaping-view.c:872
+msgid "VPN servers"
+msgstr "VPN-Server"
+
+#: shaping-view.c:873
+msgid "VPN clients"
+msgstr "VPN-Clients"
+
+#: shaping-view.c:1401
+msgid "No HTB classes on this node"
+msgstr "Keine HTB-Klassen auf diesem Knoten"
+
+#: shaping-view.c:1402
+msgid "Select a device in the tree on the left"
+msgstr "Links in der Baumansicht ein Gerät wählen"
+
+#: shaping-view.c:2260
+msgid "Credits"
+msgstr "Mitwirkende"
+
+#: shaping-view.c:2276
+msgid "License"
+msgstr "Lizenz"
+
+#: shaping-view.c:2288
+msgid "About shaping-view"
+msgstr "Über shaping-view"
+
+#: shaping-view.c:2289
+msgid "Close"
+msgstr "Schließen"
+
+#: shaping-view.c:2349
+msgid "Show / hide"
+msgstr "Anzeigen / ausblenden"
+
+#: shaping-view.c:2350
+msgid "Pause polling"
+msgstr "Abfrage pausieren"
+
+#: shaping-view.c:2352
+msgid "About"
+msgstr "Info"
+
+#: shaping-view.c:2353
+msgid "Quit"
+msgstr "Beenden"
+
+#: shaping-view.c:2549
+msgid "Device / node"
+msgstr "Gerät / Knoten"
+
+#: shaping-view.c:2566
+msgid "Direction"
+msgstr "Richtung"
+
+#: shaping-view.c:2572
+msgid "Rate"
+msgstr "Rate"
+
+#: shaping-view.c:2591
+msgid "Select a device on the left"
+msgstr "Links ein Gerät wählen"
+
+#: shaping-view.c:2613
+msgid "tc shaping — overview"
+msgstr "tc-Shaping — Übersicht"
+
+#: shaping-view.c:2619
+msgid "Pause"
+msgstr "Pause"
+
+#: shaping-view.c:2620
+msgid "Pause/resume polling"
+msgstr "Abfrage anhalten/fortsetzen"
+
+#: shaping-view.c:2626
+msgid "Polling period, s"
+msgstr "Abfrageintervall, s"
+
+#: shaping-view.c:2630
+msgid "Full height"
+msgstr "Volle Höhe"
+
+#: shaping-view.c:2632
+msgid "Stretch the graph: hide the queue list above"
+msgstr "Diagramm vergrößern: Warteschlangenliste oben ausblenden"
+
+#: shaping-view.c:2644
+msgid "Rate history (last 60 samples)"
+msgstr "Ratenverlauf (letzte 60 Messungen)"
