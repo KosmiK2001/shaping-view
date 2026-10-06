@@ -2262,6 +2262,12 @@ static GtkWidget *about_build_tabs(void)
     cred = gtk_label_new(about_mit_text);
     gtk_label_set_selectable(GTK_LABEL(cred), TRUE);
     gtk_label_set_xalign(GTK_LABEL(cred), 0.0f);
+    /* Без wrap label запрашивает ширину самой длинной строки лицензии,
+     * и вкладка License раздувает весь диалог. Wrap + ограничение ширины
+     * в символах: скролл остаётся только по вертикали. */
+    gtk_label_set_line_wrap(GTK_LABEL(cred), TRUE);
+    gtk_label_set_line_wrap_mode(GTK_LABEL(cred), PANGO_WRAP_WORD_CHAR);
+    gtk_label_set_width_chars(GTK_LABEL(cred), 44);
     sw = gtk_scrolled_window_new(NULL, NULL);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sw),
                                    GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
