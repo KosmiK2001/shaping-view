@@ -2184,6 +2184,144 @@ static void on_menu_quit(GtkMenuItem *mi, gpointer data)
     g_application_quit(G_APPLICATION(APP.app));
 }
 
+/* ===== About: кастомный диалог с вкладками Credits/License =====
+ * Состав совпадает с About в трее xscreenlets-demon: шапка, вкладка
+ * «Благодарности» (почта + донаты, выделяемые) и вкладка License с
+ * настоящим текстом MIT. gtk_about_dialog не принимает произвольных
+ * виджетов и не даёт добавить свою секцию credits — поэтому свой
+ * диалог на GtkNotebook. */
+
+static const struct { const char *coin; const char *addr; } about_donates[] = {
+    { "Bitcoin",  "bc1qfmr3ztpvsxjq0qpjd4xr4xujk5jq2jy5pntcgd" },
+    { "Litecoin", "ltc1qqdnp7h4dfc5w0sj02uhpncl9qrgt57p583r3hp" },
+    { "Solana",   "BDam16tXGmAqE3y8GncVCCzmiu1AxZwjYHQHGkyXNjEE" },
+    { "Ethereum", "0xc6817e25b4d4283878aec8309b8df542a342a7f4" },
+    { "Gridcoin", "SJcosJ2xaspR7GKjFi1WZ23AerhANVmjcf" },
+};
+
+static const char *about_mit_text =
+    "MIT License\n\n"
+    "Copyright (c) 2026 kosmik2001\n\n"
+    "Permission is hereby granted, free of charge, to any person "
+    "obtaining a copy of this software and associated documentation "
+    "files (the \"Software\"), to deal in the Software without "
+    "restriction, including without limitation the rights to use, "
+    "copy, modify, merge, publish, distribute, sublicense, and/or "
+    "sell copies of the Software, and to permit persons to whom the "
+    "Software is furnished to do so, subject to the following "
+    "conditions:\n\n"
+    "The above copyright notice and this permission notice shall be "
+    "included in all copies or substantial portions of the Software.\n\n"
+    "THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, "
+    "EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES "
+    "OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND "
+    "NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT "
+    "HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, "
+    "WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING "
+    "FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR "
+    "OTHER DEALINGS IN THE SOFTWARE.";
+
+static GtkWidget *about_build_tabs(void)
+{
+    GtkWidget *nb = gtk_notebook_new();
+    GtkWidget *dbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    GtkWidget *mail;
+    GtkWidget *cred;
+    GtkWidget *sw;
+
+    gtk_container_set_border_width(GTK_CONTAINER(dbox), 8);
+
+    /* Почта до адресов: выделяемая, чтобы можно было скопировать */
+    mail = gtk_label_new("kosmik2001@gmail.com");
+    gtk_label_set_selectable(GTK_LABEL(mail), TRUE);
+    gtk_label_set_xalign(GTK_LABEL(mail), 0.0f);
+    gtk_box_pack_start(GTK_BOX(dbox), mail, FALSE, FALSE, 2);
+    gtk_box_pack_start(GTK_BOX(dbox), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),
+                       FALSE, FALSE, 4);
+
+    for (size_t i = 0; i < G_N_ELEMENTS(about_donates); i++) {
+        GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+        GtkWidget *cl = gtk_label_new(NULL);
+        GtkWidget *cv;
+        char *e = g_markup_escape_text(about_donates[i].coin, -1);
+        char *m = g_strdup_printf("<b>%s:</b>", e);
+
+        gtk_label_set_markup(GTK_LABEL(cl), m);
+        g_free(m); g_free(e);
+        cv = gtk_label_new(about_donates[i].addr);
+        gtk_label_set_selectable(GTK_LABEL(cv), TRUE);
+        gtk_label_set_ellipsize(GTK_LABEL(cv), PANGO_ELLIPSIZE_END);
+        gtk_label_set_max_width_chars(GTK_LABEL(cv), 40);
+        gtk_label_set_xalign(GTK_LABEL(cv), 0.0f);
+        gtk_box_pack_start(GTK_BOX(row), cl, FALSE, FALSE, 0);
+        gtk_box_pack_start(GTK_BOX(row), cv, TRUE, TRUE, 0);
+        gtk_box_pack_start(GTK_BOX(dbox), row, FALSE, FALSE, 2);
+    }
+    gtk_notebook_append_page(GTK_NOTEBOOK(nb), dbox, gtk_label_new(_("Благодарности")));
+
+    cred = gtk_label_new(about_mit_text);
+    gtk_label_set_selectable(GTK_LABEL(cred), TRUE);
+    gtk_label_set_xalign(GTK_LABEL(cred), 0.0f);
+    sw = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sw),
+                                   GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_container_set_border_width(GTK_CONTAINER(sw), 8);
+    gtk_container_add(GTK_CONTAINER(sw), cred);
+    gtk_notebook_append_page(GTK_NOTEBOOK(nb), sw, gtk_label_new(_("License")));
+
+    return nb;
+}
+
+static void show_about(GtkWindow *parent)
+{
+    GtkWidget *dlg;
+    GtkWidget *vbox;
+    GtkWidget *lbl;
+    GtkWidget *nb;
+
+    dlg = gtk_dialog_new_with_buttons(_("About shaping-view"), parent, 0,
+                                      _("Close"), GTK_RESPONSE_CLOSE, NULL);
+    gtk_window_set_default_size(GTK_WINDOW(dlg), 420, 380);
+    gtk_container_set_border_width(GTK_CONTAINER(dlg), 10);
+    vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    gtk_container_add(GTK_CONTAINER(gtk_dialog_get_content_area(GTK_DIALOG(dlg))),
+                      vbox);
+
+    lbl = gtk_label_new(NULL);
+    gtk_label_set_markup(GTK_LABEL(lbl),
+                         "<b><span size=\"x-large\">shaping-view</span></b> "
+                         "<span size=\"large\">0.0.1</span>\n"
+                         "GTK3-обзор tc qdisc/class: HTB, ingress mirred/ifb,\n"
+                         "скорости, дропы, overlimits, backlog\n"
+                         "<span size=\"small\">(c) 2026 kosmik2001 "
+                         "&lt;kosmik2001@gmail.com&gt;</span>");
+    gtk_widget_set_halign(lbl, GTK_ALIGN_CENTER);
+    gtk_box_pack_start(GTK_BOX(vbox), lbl, FALSE, FALSE, 4);
+
+    nb = about_build_tabs();
+    gtk_box_pack_start(GTK_BOX(vbox), nb, TRUE, TRUE, 0);
+
+    gtk_widget_show_all(vbox);
+    gtk_window_present(GTK_WINDOW(dlg));
+    g_signal_connect(dlg, "response", G_CALLBACK(gtk_widget_destroy), NULL);
+}
+
+static void on_menu_about(GtkMenuItem *mi, gpointer data)
+{
+    (void) mi; (void) data;
+    show_about(GTK_WINDOW(APP.win));
+}
+
+static gboolean win_button_cb(GtkWidget *w, GdkEventButton *e, gpointer data)
+{
+    (void) w; (void) data;
+    if (e->button == GDK_BUTTON_SECONDARY && e->type == GDK_BUTTON_PRESS) {
+        show_about(GTK_WINDOW(APP.win));
+        return TRUE;
+    }
+    return FALSE;
+}
+
 static gboolean win_delete_event(GtkWidget *w, GdkEvent *e, gpointer data)
 {
     (void) w; (void) e; (void) data;
@@ -2206,15 +2344,18 @@ static GtkWidget *tray_build_menu(void)
     GtkWidget *mi_show = gtk_menu_item_new_with_label(_("Показать / скрыть"));
     APP.mi_pause = GTK_CHECK_MENU_ITEM(gtk_check_menu_item_new_with_label(_("Пауза опроса")));
     GtkWidget *sep = gtk_separator_menu_item_new();
+    GtkWidget *mi_about = gtk_menu_item_new_with_label(_("About"));
     GtkWidget *mi_quit = gtk_menu_item_new_with_label(_("Выход"));
 
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi_show);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), GTK_WIDGET(APP.mi_pause));
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), sep);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi_about);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi_quit);
 
     g_signal_connect(mi_show, "activate", G_CALLBACK(on_menu_show), NULL);
     g_signal_connect(APP.mi_pause, "toggled", G_CALLBACK(on_menu_pause), NULL);
+    g_signal_connect(mi_about, "activate", G_CALLBACK(on_menu_about), NULL);
     g_signal_connect(mi_quit, "activate", G_CALLBACK(on_menu_quit), NULL);
 
     gtk_widget_show_all(menu);
@@ -2532,6 +2673,9 @@ static void build_ui(App *a)
     gtk_label_set_xalign(a->status, 0.0);
     gtk_box_pack_start(GTK_BOX(vbox), GTK_WIDGET(a->status), FALSE, FALSE, 0);
 
+    /* ПКМ по окну — тот же About, что в трей-меню */
+    gtk_widget_add_events(a->win, GDK_BUTTON_PRESS_MASK);
+    g_signal_connect(a->win, "button-press-event", G_CALLBACK(win_button_cb), NULL);
     g_signal_connect(a->win, "delete-event", G_CALLBACK(win_delete_event), NULL);
     g_signal_connect(a->win, "window-state-event", G_CALLBACK(win_state_event), NULL);
 
