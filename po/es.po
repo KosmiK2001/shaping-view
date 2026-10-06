@@ -19,96 +19,96 @@ msgstr ""
 
 #: shaping-view.c:871
 msgid "Physical hardware · uplink"
-msgstr ""
+msgstr "Hardware físico · enlace saliente"
 
 #: shaping-view.c:872
 msgid "VPN servers"
-msgstr ""
+msgstr "Servidores VPN"
 
 #: shaping-view.c:873
 msgid "VPN clients"
-msgstr ""
+msgstr "Clientes VPN"
 
 #: shaping-view.c:1401
 msgid "No HTB classes on this node"
-msgstr ""
+msgstr "No hay clases HTB en este nodo"
 
 #: shaping-view.c:1402
 msgid "Select a device in the tree on the left"
-msgstr ""
+msgstr "Seleccione un dispositivo en el árbol de la izquierda"
 
 #: shaping-view.c:2260
 msgid "Credits"
-msgstr ""
+msgstr "Créditos"
 
 #: shaping-view.c:2276
 msgid "License"
-msgstr ""
+msgstr "Licencia"
 
 #: shaping-view.c:2288
 msgid "About shaping-view"
-msgstr ""
+msgstr "Acerca de shaping-view"
 
 #: shaping-view.c:2289
 msgid "Close"
-msgstr ""
+msgstr "Cerrar"
 
 #: shaping-view.c:2349
 msgid "Show / hide"
-msgstr ""
+msgstr "Mostrar / ocultar"
 
 #: shaping-view.c:2350
 msgid "Pause polling"
-msgstr ""
+msgstr "Pausar sondeo"
 
 #: shaping-view.c:2352
 msgid "About"
-msgstr ""
+msgstr "Acerca de"
 
 #: shaping-view.c:2353
 msgid "Quit"
-msgstr ""
+msgstr "Salir"
 
 #: shaping-view.c:2549
 msgid "Device / node"
-msgstr ""
+msgstr "Dispositivo / nodo"
 
 #: shaping-view.c:2566
 msgid "Direction"
-msgstr ""
+msgstr "Dirección"
 
 #: shaping-view.c:2572
 msgid "Rate"
-msgstr ""
+msgstr "Tasa"
 
 #: shaping-view.c:2591
 msgid "Select a device on the left"
-msgstr ""
+msgstr "Seleccione un dispositivo a la izquierda"
 
 #: shaping-view.c:2613
 msgid "tc shaping — overview"
-msgstr ""
+msgstr "Modelado tc — resumen"
 
 #: shaping-view.c:2619
 msgid "Pause"
-msgstr ""
+msgstr "Pausa"
 
 #: shaping-view.c:2620
 msgid "Pause/resume polling"
-msgstr ""
+msgstr "Pausar/reanudar sondeo"
 
 #: shaping-view.c:2626
 msgid "Polling period, s"
-msgstr ""
+msgstr "Período de sondeo, s"
 
 #: shaping-view.c:2630
 msgid "Full height"
-msgstr ""
+msgstr "Altura completa"
 
 #: shaping-view.c:2632
 msgid "Stretch the graph: hide the queue list above"
-msgstr ""
+msgstr "Ampliar la gráfica: ocultar la lista de colas de arriba"
 
 #: shaping-view.c:2644
 msgid "Rate history (last 60 samples)"
-msgstr ""
+msgstr "Historial de tasa (últimas 60 muestras)"

@@ -18,96 +18,96 @@ msgstr ""
 
 #: shaping-view.c:871
 msgid "Physical hardware · uplink"
-msgstr ""
+msgstr "物理硬件 · 上行链路"
 
 #: shaping-view.c:872
 msgid "VPN servers"
-msgstr ""
+msgstr "VPN 服务器"
 
 #: shaping-view.c:873
 msgid "VPN clients"
-msgstr ""
+msgstr "VPN 客户端"
 
 #: shaping-view.c:1401
 msgid "No HTB classes on this node"
-msgstr ""
+msgstr "此节点上没有 HTB 类"
 
 #: shaping-view.c:1402
 msgid "Select a device in the tree on the left"
-msgstr ""
+msgstr "请在左侧树中选择设备"
 
 #: shaping-view.c:2260
 msgid "Credits"
-msgstr ""
+msgstr "致谢"
 
 #: shaping-view.c:2276
 msgid "License"
-msgstr ""
+msgstr "许可证"
 
 #: shaping-view.c:2288
 msgid "About shaping-view"
-msgstr ""
+msgstr "关于 shaping-view"
 
 #: shaping-view.c:2289
 msgid "Close"
-msgstr ""
+msgstr "关闭"
 
 #: shaping-view.c:2349
 msgid "Show / hide"
-msgstr ""
+msgstr "显示 / 隐藏"
 
 #: shaping-view.c:2350
 msgid "Pause polling"
-msgstr ""
+msgstr "暂停轮询"
 
 #: shaping-view.c:2352
 msgid "About"
-msgstr ""
+msgstr "关于"
 
 #: shaping-view.c:2353
 msgid "Quit"
-msgstr ""
+msgstr "退出"
 
 #: shaping-view.c:2549
 msgid "Device / node"
-msgstr ""
+msgstr "设备 / 节点"
 
 #: shaping-view.c:2566
 msgid "Direction"
-msgstr ""
+msgstr "方向"
 
 #: shaping-view.c:2572
 msgid "Rate"
-msgstr ""
+msgstr "速率"
 
 #: shaping-view.c:2591
 msgid "Select a device on the left"
-msgstr ""
+msgstr "请在左侧选择设备"
 
 #: shaping-view.c:2613
 msgid "tc shaping — overview"
-msgstr ""
+msgstr "tc 流量整形 — 概览"
 
 #: shaping-view.c:2619
 msgid "Pause"
-msgstr ""
+msgstr "暂停"
 
 #: shaping-view.c:2620
 msgid "Pause/resume polling"
-msgstr ""
+msgstr "暂停/恢复轮询"
 
 #: shaping-view.c:2626
 msgid "Polling period, s"
-msgstr ""
+msgstr "轮询周期（秒）"
 
 #: shaping-view.c:2630
 msgid "Full height"
-msgstr ""
+msgstr "全高"
 
 #: shaping-view.c:2632
 msgid "Stretch the graph: hide the queue list above"
-msgstr ""
+msgstr "拉伸图表：隐藏上方的队列列表"
 
 #: shaping-view.c:2644
 msgid "Rate history (last 60 samples)"
-msgstr ""
+msgstr "速率历史（最近 60 个采样）"

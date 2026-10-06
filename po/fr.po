@@ -19,96 +19,96 @@ msgstr ""
 
 #: shaping-view.c:871
 msgid "Physical hardware · uplink"
-msgstr ""
+msgstr "Matériel physique · liaison montante"
 
 #: shaping-view.c:872
 msgid "VPN servers"
-msgstr ""
+msgstr "Serveurs VPN"
 
 #: shaping-view.c:873
 msgid "VPN clients"
-msgstr ""
+msgstr "Clients VPN"
 
 #: shaping-view.c:1401
 msgid "No HTB classes on this node"
-msgstr ""
+msgstr "Aucune classe HTB sur ce nœud"
 
 #: shaping-view.c:1402
 msgid "Select a device in the tree on the left"
-msgstr ""
+msgstr "Sélectionnez un périphérique dans l’arborescence à gauche"
 
 #: shaping-view.c:2260
 msgid "Credits"
-msgstr ""
+msgstr "Remerciements"
 
 #: shaping-view.c:2276
 msgid "License"
-msgstr ""
+msgstr "Licence"
 
 #: shaping-view.c:2288
 msgid "About shaping-view"
-msgstr ""
+msgstr "À propos de shaping-view"
 
 #: shaping-view.c:2289
 msgid "Close"
-msgstr ""
+msgstr "Fermer"
 
 #: shaping-view.c:2349
 msgid "Show / hide"
-msgstr ""
+msgstr "Afficher / masquer"
 
 #: shaping-view.c:2350
 msgid "Pause polling"
-msgstr ""
+msgstr "Suspendre l’interrogation"
 
 #: shaping-view.c:2352
 msgid "About"
-msgstr ""
+msgstr "À propos"
 
 #: shaping-view.c:2353
 msgid "Quit"
-msgstr ""
+msgstr "Quitter"
 
 #: shaping-view.c:2549
 msgid "Device / node"
-msgstr ""
+msgstr "Périphérique / nœud"
 
 #: shaping-view.c:2566
 msgid "Direction"
-msgstr ""
+msgstr "Direction"
 
 #: shaping-view.c:2572
 msgid "Rate"
-msgstr ""
+msgstr "Débit"
 
 #: shaping-view.c:2591
 msgid "Select a device on the left"
-msgstr ""
+msgstr "Sélectionnez un périphérique à gauche"
 
 #: shaping-view.c:2613
 msgid "tc shaping — overview"
-msgstr ""
+msgstr "tc shaping — vue d’ensemble"
 
 #: shaping-view.c:2619
 msgid "Pause"
-msgstr ""
+msgstr "Pause"
 
 #: shaping-view.c:2620
 msgid "Pause/resume polling"
-msgstr ""
+msgstr "Interrompre/reprendre l’interrogation"
 
 #: shaping-view.c:2626
 msgid "Polling period, s"
-msgstr ""
+msgstr "Période d’interrogation, s"
 
 #: shaping-view.c:2630
 msgid "Full height"
-msgstr ""
+msgstr "Pleine hauteur"
 
 #: shaping-view.c:2632
 msgid "Stretch the graph: hide the queue list above"
-msgstr ""
+msgstr "Agrandir le graphique : masquer la liste des files au-dessus"
 
 #: shaping-view.c:2644
 msgid "Rate history (last 60 samples)"
-msgstr ""
+msgstr "Historique du débit (60 derniers échantillons)"

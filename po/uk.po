@@ -20,96 +20,96 @@ msgstr ""
 
 #: shaping-view.c:871
 msgid "Physical hardware · uplink"
-msgstr ""
+msgstr "Фізичне обладнання · інтернет-канал"
 
 #: shaping-view.c:872
 msgid "VPN servers"
-msgstr ""
+msgstr "VPN-сервери"
 
 #: shaping-view.c:873
 msgid "VPN clients"
-msgstr ""
+msgstr "VPN-клієнти"
 
 #: shaping-view.c:1401
 msgid "No HTB classes on this node"
-msgstr ""
+msgstr "Немає класів HTB на цьому вузлі"
 
 #: shaping-view.c:1402
 msgid "Select a device in the tree on the left"
-msgstr ""
+msgstr "Виберіть пристрій у дереві ліворуч"
 
 #: shaping-view.c:2260
 msgid "Credits"
-msgstr ""
+msgstr "Подяки"
 
 #: shaping-view.c:2276
 msgid "License"
-msgstr ""
+msgstr "Ліцензія"
 
 #: shaping-view.c:2288
 msgid "About shaping-view"
-msgstr ""
+msgstr "Про програму shaping-view"
 
 #: shaping-view.c:2289
 msgid "Close"
-msgstr ""
+msgstr "Закрити"
 
 #: shaping-view.c:2349
 msgid "Show / hide"
-msgstr ""
+msgstr "Показати / приховати"
 
 #: shaping-view.c:2350
 msgid "Pause polling"
-msgstr ""
+msgstr "Пауза опитування"
 
 #: shaping-view.c:2352
 msgid "About"
-msgstr ""
+msgstr "Про програму"
 
 #: shaping-view.c:2353
 msgid "Quit"
-msgstr ""
+msgstr "Вихід"
 
 #: shaping-view.c:2549
 msgid "Device / node"
-msgstr ""
+msgstr "Пристрій / вузол"
 
 #: shaping-view.c:2566
 msgid "Direction"
-msgstr ""
+msgstr "Напрямок"
 
 #: shaping-view.c:2572
 msgid "Rate"
-msgstr ""
+msgstr "Швидкість"
 
 #: shaping-view.c:2591
 msgid "Select a device on the left"
-msgstr ""
+msgstr "Виберіть пристрій ліворуч"
 
 #: shaping-view.c:2613
 msgid "tc shaping — overview"
-msgstr ""
+msgstr "Шейпінг tc — огляд"
 
 #: shaping-view.c:2619
 msgid "Pause"
-msgstr ""
+msgstr "Пауза"
 
 #: shaping-view.c:2620
 msgid "Pause/resume polling"
-msgstr ""
+msgstr "Призупинити/відновити опитування"
 
 #: shaping-view.c:2626
 msgid "Polling period, s"
-msgstr ""
+msgstr "Період опитування, с"
 
 #: shaping-view.c:2630
 msgid "Full height"
-msgstr ""
+msgstr "На всю висоту"
 
 #: shaping-view.c:2632
 msgid "Stretch the graph: hide the queue list above"
-msgstr ""
+msgstr "Розтягнути графік: сховати список черг угорі"
 
 #: shaping-view.c:2644
 msgid "Rate history (last 60 samples)"
-msgstr ""
+msgstr "Історія швидкості (останні 60 вимірів)"
