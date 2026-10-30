@@ -932,6 +932,8 @@ typedef struct {
 #endif
     GtkWidget      *tray_menu;
     GtkCheckMenuItem *mi_pause;
+    GtkCheckMenuItem *mi_hidden;   /* «запускаться свёрнутым в трей»      */
+    gboolean        start_hidden;  /* --hidden или settings.conf [startup] */
 } App;
 
 static App APP;
@@ -2345,23 +2347,82 @@ static gboolean win_state_event(GtkWidget *w, GdkEventWindowState *e, gpointer d
     return FALSE;
 }
 
+/* ===== настройки запуска: ~/.config/shaping-view/settings.conf =====
+ * Отдельный от class-names.conf файл: там только имена классов, здесь —
+ * состояние UI. Сейчас единственный ключ:
+ *
+ *     [startup]
+ *     hidden=true      ; стартовать с окном, спрятанным в трей
+ *
+ * Флаг --hidden при запуске включает то же поведение, не меняя файл. */
+
+static char *settings_path(void)
+{
+    return g_build_filename(g_get_user_config_dir(), "shaping-view",
+                            "settings.conf", NULL);
+}
+
+static gboolean settings_start_hidden_load(void)
+{
+    char *p = settings_path();
+    GKeyFile *kf = g_key_file_new();
+    gboolean v = FALSE;
+    if (g_key_file_load_from_file(kf, p, G_KEY_FILE_NONE, NULL))
+        v = g_key_file_get_boolean(kf, "startup", "hidden", NULL);
+    g_key_file_free(kf);
+    g_free(p);
+    return v;
+}
+
+static void settings_start_hidden_save(gboolean v)
+{
+    char *p = settings_path();
+    char *dir = g_path_get_dirname(p);
+    GKeyFile *kf = g_key_file_new();
+    char *data;
+
+    g_mkdir_with_parents(dir, 0700);
+    /* нет файла — не беда: загрузится пустой набор ключей */
+    g_key_file_load_from_file(kf, p, G_KEY_FILE_KEEP_COMMENTS, NULL);
+    g_key_file_set_boolean(kf, "startup", "hidden", v);
+    data = g_key_file_to_data(kf, NULL, NULL);
+    if (data && !g_file_set_contents(p, data, -1, NULL))
+        g_warning("cannot write %s", p);
+    g_free(data);
+    g_key_file_free(kf);
+    g_free(dir);
+    g_free(p);
+}
+
+/* трей-меню: чекбокс «запускаться свёрнутым» пишется в settings.conf */
+static void on_menu_start_hidden(GtkCheckMenuItem *mi, gpointer data)
+{
+    (void) data;
+    settings_start_hidden_save(gtk_check_menu_item_get_active(mi));
+}
+
 static GtkWidget *tray_build_menu(void)
 {
     GtkWidget *menu = gtk_menu_new();
     GtkWidget *mi_show = gtk_menu_item_new_with_label(_("Show / hide"));
     APP.mi_pause = GTK_CHECK_MENU_ITEM(gtk_check_menu_item_new_with_label(_("Pause polling")));
+    APP.mi_hidden = GTK_CHECK_MENU_ITEM(gtk_check_menu_item_new_with_label(_("Start hidden in tray")));
     GtkWidget *sep = gtk_separator_menu_item_new();
     GtkWidget *mi_about = gtk_menu_item_new_with_label(_("About"));
     GtkWidget *mi_quit = gtk_menu_item_new_with_label(_("Quit"));
 
+    gtk_check_menu_item_set_active(APP.mi_hidden, settings_start_hidden_load());
+
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi_show);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), GTK_WIDGET(APP.mi_pause));
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), GTK_WIDGET(APP.mi_hidden));
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), sep);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi_about);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi_quit);
 
     g_signal_connect(mi_show, "activate", G_CALLBACK(on_menu_show), NULL);
     g_signal_connect(APP.mi_pause, "toggled", G_CALLBACK(on_menu_pause), NULL);
+    g_signal_connect(APP.mi_hidden, "toggled", G_CALLBACK(on_menu_start_hidden), NULL);
     g_signal_connect(mi_about, "activate", G_CALLBACK(on_menu_about), NULL);
     g_signal_connect(mi_quit, "activate", G_CALLBACK(on_menu_quit), NULL);
 
@@ -2689,6 +2750,12 @@ static void build_ui(App *a)
     gtk_container_add(GTK_CONTAINER(a->win), vbox);
     gtk_widget_show_all(a->win);
 
+    /* Старт «в трей»: окно уже показано, но ещё ни разу не отрисовано —
+     * прячем его до возврата в главный цикл, поэтому вспышки не видно.
+     * Само приложение остаётся живым: скрытое окно не закрыто, а трей
+     * активируется ниже в tray_init(). */
+    if (APP.start_hidden) gtk_widget_hide(APP.win);
+
     /* курсор ресайза над ручкой (окно появляется после show_all) */
     if (gtk_widget_get_window(APP.grip)) {
         GdkCursor *cur = gdk_cursor_new_from_name(gdk_display_get_default(), "ns-resize");
@@ -2739,6 +2806,8 @@ static void on_activate(GtkApplication *application, gpointer data)
 
     a->tc_path = g_find_program_in_path("tc");
     a->ip_path = g_find_program_in_path("ip");
+    /* «стартовать в трей»: флаг --hidden ИЛИ настройка из settings.conf */
+    a->start_hidden = a->start_hidden || settings_start_hidden_load();
     load_names(a);
     build_ui(a);
 
@@ -2767,6 +2836,18 @@ static void on_shutdown(GtkApplication *application, gpointer data)
     g_free(a->uplink_name); a->uplink_name = NULL;
 }
 
+/* --hidden: спрятать окно в трей при старте (для autostart).
+ * Возвращаем -1, чтобы GApplication продолжил обычный запуск. */
+static int on_handle_local_options(GApplication *application, GVariantDict *options,
+                                   gpointer data)
+{
+    (void) application;
+    App *a = data;
+    if (g_variant_dict_contains(options, "hidden"))
+        a->start_hidden = TRUE;
+    return -1;
+}
+
 int main(int argc, char **argv)
 {
     setlocale(LC_ALL, "");
@@ -2787,6 +2868,12 @@ int main(int argc, char **argv)
         APP.grp[i] = g_ptr_array_new_with_free_func(g_free);
 
     APP.app = gtk_application_new(APP_ID, G_APPLICATION_NON_UNIQUE);
+    g_application_add_main_option(G_APPLICATION(APP.app), "hidden", '\0', G_OPTION_FLAG_NONE,
+                                  G_OPTION_ARG_NONE,
+                                  _("Start with the window hidden in the tray"),
+                                  NULL);
+    g_signal_connect(APP.app, "handle-local-options",
+                     G_CALLBACK(on_handle_local_options), &APP);
     g_signal_connect(APP.app, "activate", G_CALLBACK(on_activate), &APP);
     g_signal_connect(APP.app, "shutdown", G_CALLBACK(on_shutdown), &APP);
 

@@ -62,6 +62,14 @@ msgstr "Показати / приховати"
 msgid "Pause polling"
 msgstr "Пауза опитування"
 
+#: shaping-view.c:2409
+msgid "Start hidden in tray"
+msgstr "Запускатися згорнутим у трей"
+
+#: shaping-view.c:2873
+msgid "Start with the window hidden in the tray"
+msgstr "Запускати з вікном, прихованим у треї"
+
 #: shaping-view.c:2352
 msgid "About"
 msgstr "Про програму"

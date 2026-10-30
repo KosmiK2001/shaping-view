@@ -60,6 +60,14 @@ msgstr "显示 / 隐藏"
 msgid "Pause polling"
 msgstr "暂停轮询"
 
+#: shaping-view.c:2409
+msgid "Start hidden in tray"
+msgstr "启动时隐藏到托盘"
+
+#: shaping-view.c:2873
+msgid "Start with the window hidden in the tray"
+msgstr "启动时将窗口隐藏到托盘"
+
 #: shaping-view.c:2352
 msgid "About"
 msgstr "关于"

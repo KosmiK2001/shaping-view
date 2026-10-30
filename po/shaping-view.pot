@@ -146,6 +146,14 @@ msgstr ""
 msgid "Pause polling"
 msgstr ""
 
+#: shaping-view.c:2409
+msgid "Start hidden in tray"
+msgstr ""
+
+#: shaping-view.c:2873
+msgid "Start with the window hidden in the tray"
+msgstr ""
+
 #: shaping-view.c:2354
 msgid "About"
 msgstr ""

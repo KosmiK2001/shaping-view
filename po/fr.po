@@ -61,6 +61,14 @@ msgstr "Afficher / masquer"
 msgid "Pause polling"
 msgstr "Suspendre l’interrogation"
 
+#: shaping-view.c:2409
+msgid "Start hidden in tray"
+msgstr "Démarrer réduit dans la zone de notification"
+
+#: shaping-view.c:2873
+msgid "Start with the window hidden in the tray"
+msgstr "Démarrer avec la fenêtre masquée dans la zone de notification"
+
 #: shaping-view.c:2352
 msgid "About"
 msgstr "À propos"

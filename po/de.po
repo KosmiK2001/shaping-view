@@ -61,6 +61,14 @@ msgstr "Anzeigen / ausblenden"
 msgid "Pause polling"
 msgstr "Abfrage pausieren"
 
+#: shaping-view.c:2409
+msgid "Start hidden in tray"
+msgstr "Beim Start im Tray verbergen"
+
+#: shaping-view.c:2873
+msgid "Start with the window hidden in the tray"
+msgstr "Mit im Tray verstecktem Fenster starten"
+
 #: shaping-view.c:2352
 msgid "About"
 msgstr "Info"

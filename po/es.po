@@ -61,6 +61,14 @@ msgstr "Mostrar / ocultar"
 msgid "Pause polling"
 msgstr "Pausar sondeo"
 
+#: shaping-view.c:2409
+msgid "Start hidden in tray"
+msgstr "Iniciar oculto en la bandeja"
+
+#: shaping-view.c:2873
+msgid "Start with the window hidden in the tray"
+msgstr "Iniciar con la ventana oculta en la bandeja"
+
 #: shaping-view.c:2352
 msgid "About"
 msgstr "Acerca de"
