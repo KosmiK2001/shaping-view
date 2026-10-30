@@ -2300,7 +2300,7 @@ static void show_about(GtkWindow *parent)
     lbl = gtk_label_new(NULL);
     gtk_label_set_markup(GTK_LABEL(lbl),
                          "<b><span size=\"x-large\">shaping-view</span></b> "
-                         "<span size=\"large\">0.0.1</span>\n"
+                         "<span size=\"large\">0.0.2</span>\n"
                          "GTK3-обзор tc qdisc/class\n"
                          "<span size=\"small\">(c) 2026 kosmik2001 "
                          "&lt;kosmik2001@gmail.com&gt;</span>");
